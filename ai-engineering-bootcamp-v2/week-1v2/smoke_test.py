@@ -54,13 +54,14 @@ def main() -> int:
         if not wait_for_health(base_url):
             print(f"FAIL: API did not become healthy at {base_url}")
             return 1
+        print(f"PASS: /health returned 200 at {base_url}")
 
         docs_response = httpx.get(f"{base_url}/docs", timeout=2.0)
         if docs_response.status_code != 200:
             print(f"FAIL: /docs returned HTTP {docs_response.status_code}")
             return 1
+        print(f"PASS: /docs returned 200 at {base_url}")
 
-        print(f"PASS: API health and docs are available at {base_url}")
         return 0
     finally:
         proc.terminate()

@@ -115,6 +115,11 @@ def call_model_unsafe(question: str, model: str) -> tuple[Answer, int, int, int]
     return answer, total, prompt_tokens, completion_tokens
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.post("/ask")
 def ask(body: AskRequest) -> AskResponse:
     """Answer one question with structured output, guardrails, and cost visibility."""

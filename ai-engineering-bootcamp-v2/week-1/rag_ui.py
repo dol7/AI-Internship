@@ -1,16 +1,18 @@
-"""Minimal Streamlit UI for the live RAG service (POST /ingest, POST /ask).
+"""Minimal Streamlit UI for the live RAG + Agent service
+(POST /ingest, POST /ask, GET /debug/retrieve, POST /agent).
 
-Thin client only. All chunking, embedding, retrieval, and generation happen
-in the FastAPI service -- this page just calls its two endpoints over HTTP
-and displays the response. No OpenAI/Pinecone calls, no RAG logic here.
+Thin client only. All chunking, embedding, retrieval, generation, and the
+ADK agent loop happen in the FastAPI service -- this page just calls its
+endpoints over HTTP and displays the response. No OpenAI/Pinecone/Google
+calls and no RAG/agent logic here.
 
 Run:
   streamlit run rag_ui.py
 
 Points at your API via the sidebar "API base URL" field, which defaults to
 the API_BASE_URL environment variable if set (falls back to localhost).
-No secrets live in this UI -- the API holds its own OpenAI/Pinecone keys
-server-side; this page only ever needs a URL.
+No secrets live in this UI -- the API holds its own OpenAI/Pinecone/Google
+keys server-side; this page only ever needs a URL.
 """
 
 import os
@@ -18,9 +20,9 @@ import os
 import httpx
 import streamlit as st
 
-st.set_page_config(page_title="RAG Service UI", layout="wide")
-st.title("RAG Service — Ingest & Ask")
-st.caption("Thin client only. All RAG logic (chunking, retrieval, generation) lives in the API.")
+st.set_page_config(page_title="RAG + Agent Service UI", layout="wide")
+st.title("Capstone Service — Ingest, Ask, Debug, Agent")
+st.caption("Thin client only. All RAG and agent logic lives in the API, not here.")
 
 default_base_url = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
 base_url = st.sidebar.text_input("API base URL", value=default_base_url).rstrip("/")
@@ -29,7 +31,7 @@ st.sidebar.caption(
     "No secrets are stored here -- the API holds its own keys server-side."
 )
 
-tab_ingest, tab_ask, tab_debug = st.tabs(["Ingest", "Ask", "Debug Retrieve"])
+tab_ingest, tab_ask, tab_debug, tab_agent = st.tabs(["Ingest", "Ask", "Debug Retrieve", "Agent"])
 
 with tab_ingest:
     st.subheader("POST /ingest")
@@ -108,6 +110,85 @@ with tab_ask:
                     m2.metric("Tokens used", data.get("tokens_used", "—"))
                     m3.metric("Latency (ms)", data.get("latency_ms", "—"))
                     m4.metric("Cost (USD)", f"${data.get('cost_usd', 0):.6f}")
+
+                    with st.expander("Full JSON response"):
+                        st.json(data)
+
+with tab_agent:
+    st.subheader("POST /agent")
+    st.caption(
+        "The ADK on-call agent decides for itself how many times to call "
+        "search_runbooks before answering -- this isn't a fixed pipeline."
+    )
+
+    goal = st.text_area(
+        "Task / question for the agent",
+        height=100,
+        placeholder="e.g. Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?",
+    )
+
+    if st.button("Run Agent", type="primary"):
+        if not goal.strip():
+            st.error("A task/question is required.")
+        else:
+            # Free-tier hosting means the API may be fully asleep (cold start
+            # can take 60-90s+). One giant blocking call for that whole window
+            # freezes this entire Streamlit app -- including its own connection
+            # back to your browser -- and something in the chain (Render/
+            # Cloudflare) can drop that connection before the wait is over,
+            # surfacing as a browser-side "Failed to fetch" even though the
+            # backend would have eventually succeeded. Splitting into several
+            # short pings keeps the app visibly alive and responsive instead.
+            status = st.empty()
+            api_awake = False
+            for attempt in range(1, 7):
+                status.info(f"Waking up the API... (attempt {attempt}/6)")
+                try:
+                    health = httpx.get(f"{base_url}/health", timeout=15.0)
+                    if health.status_code == 200:
+                        api_awake = True
+                        break
+                except httpx.HTTPError:
+                    pass
+
+            response = None
+            if not api_awake:
+                status.error("API did not wake up after ~90s. Wait a moment and click Run Agent again.")
+            else:
+                status.info("API is awake — running the agent (usually 10-30s)...")
+                try:
+                    response = httpx.post(f"{base_url}/agent", json={"goal": goal}, timeout=90.0)
+                except httpx.HTTPError as exc:
+                    status.error(f"Request failed: {exc}")
+                    response = None
+                else:
+                    status.empty()
+
+            if response is not None:
+                if response.status_code != 200:
+                    st.error(f"HTTP {response.status_code}")
+                    st.json(response.json())
+                else:
+                    data = response.json()
+
+                    st.markdown("### Step log (Think → Act → Observe)")
+                    st.caption(
+                        "Each step below is one completed tool call: the agent's internal "
+                        "'Think' isn't returned by this endpoint, only which tool it decided "
+                        "to Act with and what it Observed back."
+                    )
+                    steps = data.get("steps", [])
+                    if not steps:
+                        st.info("No tool calls were made for this task.")
+                    for i, step in enumerate(steps, start=1):
+                        st.markdown(f"**Step {i}**")
+                        st.markdown(f"🔧 **Act:** called `{step['tool']}`")
+                        st.markdown(f"👀 **Observe:**")
+                        st.code(step["observation"], language="text")
+
+                    st.divider()
+                    st.markdown("### Final Answer")
+                    st.success(data["answer"])
 
                     with st.expander("Full JSON response"):
                         st.json(data)

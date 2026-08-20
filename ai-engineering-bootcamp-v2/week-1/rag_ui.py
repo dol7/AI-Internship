@@ -173,18 +173,26 @@ with tab_agent:
 
                     st.markdown("### Step log (Think → Act → Observe)")
                     st.caption(
-                        "Each step below is one completed tool call: the agent's internal "
-                        "'Think' isn't returned by this endpoint, only which tool it decided "
-                        "to Act with and what it Observed back."
+                        "Live trail of the agent's run: 'Think' steps only appear if the "
+                        "model actually exposed reasoning content for that call -- some "
+                        "models go straight from Act to Observe with no separate Think part."
                     )
                     steps = data.get("steps", [])
                     if not steps:
                         st.info("No tool calls were made for this task.")
                     for i, step in enumerate(steps, start=1):
+                        kind = step.get("kind")
                         st.markdown(f"**Step {i}**")
-                        st.markdown(f"🔧 **Act:** called `{step['tool']}`")
-                        st.markdown(f"👀 **Observe:**")
-                        st.code(step["observation"], language="text")
+                        if kind == "think":
+                            st.markdown("🧠 **Think:**")
+                            st.code(step["content"], language="text")
+                        elif kind == "act":
+                            st.markdown(f"🔧 **Act:** called `{step['tool']}` with {step['content']}")
+                        elif kind == "observe":
+                            st.markdown(f"👀 **Observe** (from `{step['tool']}`):")
+                            st.code(step["content"], language="text")
+                        else:
+                            st.code(step, language="text")
 
                     st.divider()
                     st.markdown("### Final Answer")

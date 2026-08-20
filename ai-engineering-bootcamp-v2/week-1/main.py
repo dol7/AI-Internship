@@ -144,11 +144,15 @@ class AgentRequest(BaseModel):
 
 
 class AgentStep(BaseModel):
-    """One completed tool call: which tool, and a truncated view of what it returned.
-    Never includes raw env vars, API keys, or unbounded tool output."""
+    """One event in the agent's reasoning trail: a Think (model reasoning
+    before acting, if the model exposes it), an Act (which tool it decided
+    to call), or an Observe (what that tool returned, truncated). Not every
+    step has every field. Never includes raw env vars, API keys, or
+    unbounded tool output."""
 
-    tool: str
-    observation: str
+    kind: str  # "think" | "act" | "observe"
+    tool: str | None = None  # populated for act/observe
+    content: str
 
 
 class AgentResponse(BaseModel):
@@ -527,14 +531,29 @@ async def agent_endpoint(body: AgentRequest) -> AgentResponse:
             if not event.content or not event.content.parts:
                 continue
 
+            is_final = event.is_final_response()
+
             for part in event.content.parts:
-                if part.function_response:
+                if part.function_call:
+                    args = dict(part.function_call.args or {})
+                    steps.append(
+                        AgentStep(kind="act", tool=part.function_call.name, content=str(args))
+                    )
+                elif part.function_response:
                     observation = str(part.function_response.response)
                     if len(observation) > AGENT_OBSERVATION_MAX_CHARS:
                         observation = observation[:AGENT_OBSERVATION_MAX_CHARS] + "..."
-                    steps.append(AgentStep(tool=part.function_response.name, observation=observation))
+                    steps.append(
+                        AgentStep(kind="observe", tool=part.function_response.name, content=observation)
+                    )
+                elif getattr(part, "thought", None):
+                    steps.append(AgentStep(kind="think", content=part.text or ""))
+                elif part.text and not is_final:
+                    # Some models put pre-final reasoning in a plain text part
+                    # without setting the `thought` flag -- still Think, not Final.
+                    steps.append(AgentStep(kind="think", content=part.text))
 
-            if event.is_final_response() and event.content.parts:
+            if is_final and event.content.parts:
                 final_text = event.content.parts[0].text or final_text
     except Exception as exc:
         # Covers real failure modes like Gemini quota/rate-limit errors, not just

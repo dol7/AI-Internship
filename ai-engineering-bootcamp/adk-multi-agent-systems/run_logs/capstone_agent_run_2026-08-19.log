@@ -1,0 +1,80 @@
+/Users/demetrios/Documents/Maven AI Bootcamp/AI-Internship/ai-engineering-bootcamp/adk-multi-agent-systems/.venv/lib/python3.13/site-packages/google/adk/models/llm_request.py:273: UserWarning: [EXPERIMENTAL] feature FeatureName.JSON_SCHEMA_FOR_FUNC_DECL is enabled.
+  declaration = tool._get_declaration()
+User: Storefront search p99 latency spiked to 3 seconds and no deploy correlates. What's going on and what should I check?
+
+[01] ACT     oncall_runbook_agent -> search_runbooks({'question': 'Storefront search p99 latency spiked to 3 seconds and no deploy correlates'})
+[02] OBSERVE oncall_runbook_agent <- search_runbooks returned: {'answer': 'The latency spike in the storefront search was caused by the expiration of a cache key for the "Best Sellers" collection at 09:00 UTC, leading to a cache stampede. This event caused the p99 latency of storefront-search to increase from the usual 150ms to over 3 seconds for a period of 22 minutes. \n\nThe symptoms of the issue included:\n- A sharp spike in the latency of the Storefront API\'s `.search` and `.predictiveSearch` queries as well as `collection.products` filtered listings.\n- A significant increase in Redis CPU utilization nearing 100%.\n- Increased load on the product catalog Postgres read-replica as the cache misses fell through to the database.\n\nThe impact was:\n- p99 latency exceeding 3 seconds on /collections/best-sellers and general /search requests.\n- An estimated 8% of requests during this period timed out on the client-side.\n\nNo deploy was found to correlate with the incident, and there was no data corruption or incorrect product results served.\n\nThis information was synthesized directly from the postmortem report and related documentation in the provided context.', 'sources_needed': False, 'citations': ['postmortem_2026-04-18_storefront_search_latency_spike'], 'retrieved_chunk_ids': ['postmortem_2026-04-18_storefront_search_latency_spike-0', 'postmortem_2026-04-18_storefront_search_latency_spike-1', 'runbook_redis_cache_stampede-1', 'postmortem_2026-04-18_storefront_search_latency_spike-2', 'runbook_redis_cache_stampede-4']}
+[03] ACT     oncall_runbook_agent -> search_runbooks({'question': 'remediation diagnostic steps for storefront search latency spike redis cache stampede'})
+[04] OBSERVE oncall_runbook_agent <- search_runbooks returned: {'answer': 'To remediate a storefront search latency spike due to a Redis cache stampede, follow these diagnostic steps:\n\n1. **Enable Request Coalescing:**\n   - Immediately set the `SEARCH_CACHE_LOCK_ENABLED` flag to `true`. This action ensures only one request per cache key recomputes, while other requests wait for the result. This can help reduce the load on Redis and Postgres by preventing a thundering-herd problem.\n   \n2. **Monitor Redis CPU Utilization:**\n   - Check Redis CPU metrics to verify if the load on the CPU decreases after enabling request coalescing. Look for a reduction in CPU usage after this intervention.\n   \n3. **Observe Postgres Load:**\n   - Monitor the Postgres read-replica for any changes in load to confirm the downstream effects of cache misses are being mitigated. This involves checking for a drop in query load as Redis becomes more stable.\n   \n4. **Redistribute Read Loads:**\n   - If enabling request coalescing does not provide sufficient relief and the Postgres read replica remains a bottleneck, consider temporarily routing reads to a secondary replica pool. This action should help distribute the database load more evenly and relieve the primary read path.\n\nThese steps focus on quickly stabilizing the system during a cache stampede incident by reducing redundant computations and balancing database load.\n\nCitations:\n- `runbook_redis_cache_stampede`', 'sources_needed': False, 'citations': ['runbook_redis_cache_stampede'], 'retrieved_chunk_ids': ['postmortem_2026-04-18_storefront_search_latency_spike-0', 'runbook_redis_cache_stampede-0', 'postmortem_2026-04-18_storefront_search_latency_spike-1', 'runbook_redis_cache_stampede-1', 'runbook_redis_cache_stampede-7']}
+[05] FINAL   oncall_runbook_agent: Based on the incident runbook and postmortem knowledge base, here is what is likely occurring, along with the diagnostic and remediation steps to take:
+
+### What Is Going On
+This issue matches a **Redis Cache Stampede** on the storefront search path (e.g., expiration of high-traffic cache keys like the "Best Sellers" collection):
+* **Root Cause:** A critical cache key expired, causing a thundering herd where incoming `.search`, `.predictiveSearch`, and `collection.products` queries simultaneously missed the cache and tried to recompute results.
+* **Key Symptoms:**
+  * Sharp spike in Storefront API p99 latency (exceeding 3 seconds).
+  * Redis CPU utilization spiking toward 100%.
+  * Increased query load falling through to the product catalog Postgres read-replica.
+  * Increased client-side timeouts.
+
+---
+
+### What to Check & Remediation Steps
+
+1. **Check Redis & Database Metrics:**
+   * **Redis CPU:** Verify if Redis CPU utilization is near 100%.
+   * **Postgres Load:** Inspect the product catalog Postgres read-replica to confirm increased query load from cache misses falling through to the database.
+
+2. **Enable Request Coalescing (Immediate Mitigation):**
+   * Set the feature flag **`SEARCH_CACHE_LOCK_ENABLED`** to **`true`**.
+   * *Effect:* This ensures only one request per cache key recomputes the result while other incoming requests wait, stopping the cache stampede.
+
+3. **Verify Load Recovery:**
+   * Monitor Redis CPU metrics to confirm utilization drops.
+   * Check Postgres read-replica load to ensure database query rates stabilize.
+
+4. **Redistribute Read Load (If Database Remains Bottlenecked):**
+   * If enabling `SEARCH_CACHE_LOCK_ENABLED` does not provide sufficient relief and the Postgres read replica remains heavily overloaded, temporarily route reads to a secondary replica pool to relieve the primary read path.
+
+---
+
+### Sources / Citations
+* `postmortem_2026-04-18_storefront_search_latency_spike`
+* `runbook_redis_cache_stampede`
+
+Final answer:
+Based on the incident runbook and postmortem knowledge base, here is what is likely occurring, along with the diagnostic and remediation steps to take:
+
+### What Is Going On
+This issue matches a **Redis Cache Stampede** on the storefront search path (e.g., expiration of high-traffic cache keys like the "Best Sellers" collection):
+* **Root Cause:** A critical cache key expired, causing a thundering herd where incoming `.search`, `.predictiveSearch`, and `collection.products` queries simultaneously missed the cache and tried to recompute results.
+* **Key Symptoms:**
+  * Sharp spike in Storefront API p99 latency (exceeding 3 seconds).
+  * Redis CPU utilization spiking toward 100%.
+  * Increased query load falling through to the product catalog Postgres read-replica.
+  * Increased client-side timeouts.
+
+---
+
+### What to Check & Remediation Steps
+
+1. **Check Redis & Database Metrics:**
+   * **Redis CPU:** Verify if Redis CPU utilization is near 100%.
+   * **Postgres Load:** Inspect the product catalog Postgres read-replica to confirm increased query load from cache misses falling through to the database.
+
+2. **Enable Request Coalescing (Immediate Mitigation):**
+   * Set the feature flag **`SEARCH_CACHE_LOCK_ENABLED`** to **`true`**.
+   * *Effect:* This ensures only one request per cache key recomputes the result while other incoming requests wait, stopping the cache stampede.
+
+3. **Verify Load Recovery:**
+   * Monitor Redis CPU metrics to confirm utilization drops.
+   * Check Postgres read-replica load to ensure database query rates stabilize.
+
+4. **Redistribute Read Load (If Database Remains Bottlenecked):**
+   * If enabling `SEARCH_CACHE_LOCK_ENABLED` does not provide sufficient relief and the Postgres read replica remains heavily overloaded, temporarily route reads to a secondary replica pool to relieve the primary read path.
+
+---
+
+### Sources / Citations
+* `postmortem_2026-04-18_storefront_search_latency_spike`
+* `runbook_redis_cache_stampede`

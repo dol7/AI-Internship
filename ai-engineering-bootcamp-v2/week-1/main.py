@@ -11,6 +11,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from google.adk.agents import Agent
+from google.adk.agents.run_config import RunConfig
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types as genai_types
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from openai import OpenAI
 from pinecone import Pinecone, ServerlessSpec
@@ -51,6 +56,12 @@ CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "80"))
 # diluting embeddings enough that an unrelated chunk narrowly outranked the
 # actually-relevant one for "how many remote days are allowed?" (0.506 vs 0.493).
 # At 400/80 the relevant chunk isolates cleanly and wins by a real margin (0.589 vs 0.551).
+
+# POST /agent — ADK config. Reads GOOGLE_API_KEY from the environment via ADK's
+# own client init; never read or logged directly by this file.
+AGENT_MODEL = "gemini-3.6-flash"
+AGENT_MAX_LLM_CALLS = 6  # hard cap so a confused run can't loop forever
+AGENT_OBSERVATION_MAX_CHARS = 300  # truncate tool observations before returning to callers
 
 pinecone_client = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
 _existing_indexes = [idx["name"] for idx in pinecone_client.list_indexes()]
@@ -124,6 +135,25 @@ class DebugRetrieveResponse(BaseModel):
     question: str
     threshold: float
     chunks: list[RetrievedChunk]
+
+
+class AgentRequest(BaseModel):
+    """A goal for the ADK agent to accomplish, not a single canned question."""
+
+    goal: str = Field(min_length=1)
+
+
+class AgentStep(BaseModel):
+    """One completed tool call: which tool, and a truncated view of what it returned.
+    Never includes raw env vars, API keys, or unbounded tool output."""
+
+    tool: str
+    observation: str
+
+
+class AgentResponse(BaseModel):
+    answer: str
+    steps: list[AgentStep] = Field(default_factory=list)
 
 
 def compute_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -265,6 +295,53 @@ def call_model_unsafe(question: str, model: str) -> tuple[Answer, int, int, int]
     return answer, total, prompt_tokens, completion_tokens
 
 
+def search_runbooks(question: str) -> dict:
+    """Search the on-call runbook/postmortem knowledge base for information
+    relevant to this incident question.
+
+    Real tool: calls the same in-process RAG pipeline that backs POST /ask
+    (retrieve -> ground -> generate) directly, since the agent lives in the
+    same process as that logic -- no self-referential HTTP hop needed.
+    Never returns raw exceptions to the model; failures come back as a dict
+    with an "error" key so the agent can observe and react to them.
+    """
+
+    try:
+        answer, _tokens, _prompt_tokens, _completion_tokens, retrieved_chunk_ids = (
+            call_rag_structured(question, DEFAULT_MODEL)
+        )
+    except (ValidationError, ValueError) as exc:
+        return {"error": f"Runbook search failed: {exc}"}
+
+    return {
+        "answer": answer.answer,
+        "sources_needed": answer.sources_needed,
+        "citations": answer.citations,
+        "retrieved_chunk_ids": retrieved_chunk_ids,
+    }
+
+
+oncall_agent = Agent(
+    name="oncall_runbook_agent",
+    model=AGENT_MODEL,
+    instruction=(
+        "You are an on-call incident-triage agent for a Shopify-platform engineering team.\n\n"
+        "GOAL: given a description of a production symptom, use the search_runbooks tool "
+        "to find the matching runbook or postmortem, then return specific diagnostic and "
+        "remediation steps, citing the source document.\n\n"
+        "CONSTRAINTS: never invent a runbook, root cause, or remediation step that the tool "
+        "did not actually return. If the tool result has an 'error' key, the search itself "
+        "failed -- tell the user the lookup failed and why, do not guess an answer instead. "
+        "If sources_needed is true, the knowledge base did not have enough information -- "
+        "say so honestly rather than filling the gap with your own knowledge.\n\n"
+        "DONE: you have either (a) returned diagnostic steps grounded in the tool's real "
+        "answer with its citations, (b) told the user the knowledge base had no match "
+        "(sources_needed: true), or (c) told the user the tool call itself failed (error key)."
+    ),
+    tools=[search_runbooks],
+)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -391,3 +468,66 @@ def ask(body: AskRequest) -> AskResponse:
         status_code=502,
         detail=f"Model response failed schema validation after retry: {last_error}",
     )
+
+
+@app.post("/agent")
+async def agent_endpoint(body: AgentRequest) -> AgentResponse:
+    """
+    Invoke the ADK on-call agent with a goal, not a single fixed question --
+    it decides for itself how many times (and how) to call search_runbooks
+    before answering. Response is the final answer plus a steps[] trail of
+    which tools ran and a truncated view of what they returned. Never
+    includes API keys or environment variables -- steps only ever contain
+    the tool name and a truncated string of its JSON return value.
+
+    curl (local):
+      curl -s -X POST http://127.0.0.1:8000/agent \
+        -H "Content-Type: application/json" \
+        -d '{"goal": "Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?"}'
+
+    curl (Render):
+      curl -s -X POST https://ai-internship-5euv.onrender.com/agent \
+        -H "Content-Type: application/json" \
+        -d '{"goal": "Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?"}'
+    """
+
+    service = InMemorySessionService()
+    runner = Runner(agent=oncall_agent, app_name="capstone_agent", session_service=service)
+    session = await service.create_session(app_name="capstone_agent", user_id="agent_api_user")
+    content = genai_types.Content(role="user", parts=[genai_types.Part(text=body.goal)])
+    run_config = RunConfig(max_llm_calls=AGENT_MAX_LLM_CALLS)
+
+    steps: list[AgentStep] = []
+    final_text = ""
+
+    try:
+        async for event in runner.run_async(
+            user_id="agent_api_user",
+            session_id=session.id,
+            new_message=content,
+            run_config=run_config,
+        ):
+            if not event.content or not event.content.parts:
+                continue
+
+            for part in event.content.parts:
+                if part.function_response:
+                    observation = str(part.function_response.response)
+                    if len(observation) > AGENT_OBSERVATION_MAX_CHARS:
+                        observation = observation[:AGENT_OBSERVATION_MAX_CHARS] + "..."
+                    steps.append(AgentStep(tool=part.function_response.name, observation=observation))
+
+            if event.is_final_response() and event.content.parts:
+                final_text = event.content.parts[0].text or final_text
+    except Exception as exc:
+        # Covers real failure modes like Gemini quota/rate-limit errors, not just
+        # our own code -- never let a raw framework traceback reach the client.
+        raise HTTPException(
+            status_code=502,
+            detail=f"Agent invocation failed: {type(exc).__name__}: {str(exc)[:300]}",
+        )
+
+    if not final_text:
+        raise HTTPException(status_code=502, detail="Agent run ended without a final response.")
+
+    return AgentResponse(answer=final_text, steps=steps)

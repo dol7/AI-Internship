@@ -143,9 +143,11 @@ def run_agent_and_render(endpoint_path: str, goal: str) -> None:
     if not api_awake:
         status.error("API did not wake up after ~90s. Wait a moment and click Run Agent again.")
     else:
-        status.info("API is awake — running the agent (usually 10-30s)...")
+        status.info("API is awake — running the agent (usually 10-30s, longer for MCP tool calls)...")
         try:
-            response = httpx.post(f"{base_url}{endpoint_path}", json={"goal": goal}, timeout=90.0)
+            # MCP path can chain two tool calls at up to 60s each on Render's
+            # free-tier CPU -- give it real headroom instead of a tight bound.
+            response = httpx.post(f"{base_url}{endpoint_path}", json={"goal": goal}, timeout=150.0)
         except httpx.HTTPError as exc:
             status.error(f"Request failed: {exc}")
             response = None

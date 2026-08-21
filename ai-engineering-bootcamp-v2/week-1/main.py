@@ -47,6 +47,10 @@ MODEL_PRICES_PER_1K: dict[str, tuple[float, float]] = {
 # own client init; never read or logged directly by this file.
 AGENT_MODEL = "gemini-3.6-flash"
 AGENT_MAX_LLM_CALLS = 6  # hard cap so a confused run can't loop forever
+# The MCP path adds a subprocess round trip (spawn/IPC/JSON-RPC) on top of the
+# same RAG work the plain path does -- structurally slower per call, so it
+# gets a slightly bigger budget rather than tightening the plain path's.
+AGENT_MCP_MAX_LLM_CALLS = 9
 AGENT_OBSERVATION_MAX_CHARS = 300  # truncate tool observations before returning to callers
 
 
@@ -196,7 +200,12 @@ oncall_agent_mcp = Agent(
                     command=sys.executable,
                     args=[str(Path(__file__).resolve().parent / "mcp_server.py")],
                 ),
-                timeout=30.0,
+                # Render's free-tier CPU makes each MCP round trip meaningfully
+                # slower than the same call locally -- 30s was tight enough to
+                # produce empty runs in production even though search_runbooks
+                # itself always completed. 60s gives real headroom without
+                # masking a genuinely hung subprocess.
+                timeout=60.0,
             )
         )
     ],
@@ -331,7 +340,7 @@ def ask(body: AskRequest) -> AskResponse:
     )
 
 
-async def run_agent(agent: Agent, goal: str) -> AgentResponse:
+async def run_agent(agent: Agent, goal: str, max_llm_calls: int = AGENT_MAX_LLM_CALLS) -> AgentResponse:
     """
     Shared driver behind /agent and /agent/mcp: invoke the given ADK agent
     with a goal, not a single fixed question -- it decides for itself how
@@ -345,7 +354,7 @@ async def run_agent(agent: Agent, goal: str) -> AgentResponse:
     runner = Runner(agent=agent, app_name="capstone_agent", session_service=service)
     session = await service.create_session(app_name="capstone_agent", user_id="agent_api_user")
     content = genai_types.Content(role="user", parts=[genai_types.Part(text=goal)])
-    run_config = RunConfig(max_llm_calls=AGENT_MAX_LLM_CALLS)
+    run_config = RunConfig(max_llm_calls=max_llm_calls)
 
     steps: list[AgentStep] = []
     final_text = ""
@@ -431,4 +440,4 @@ async def agent_mcp_endpoint(body: AgentRequest) -> AgentResponse:
         -H "Content-Type: application/json" \
         -d '{"goal": "Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?"}'
     """
-    return await run_agent(oncall_agent_mcp, body.goal)
+    return await run_agent(oncall_agent_mcp, body.goal, max_llm_calls=AGENT_MCP_MAX_LLM_CALLS)

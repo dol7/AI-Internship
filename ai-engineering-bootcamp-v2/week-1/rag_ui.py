@@ -114,11 +114,91 @@ with tab_ask:
                     with st.expander("Full JSON response"):
                         st.json(data)
 
+def run_agent_and_render(endpoint_path: str, goal: str) -> None:
+    """Wake the API, call the given agent endpoint with goal, and render its
+    step log + final answer. Shared by both the plain-tool and MCP buttons
+    below so the wake-up/render logic isn't duplicated per endpoint."""
+
+    # Free-tier hosting means the API may be fully asleep (cold start
+    # can take 60-90s+). One giant blocking call for that whole window
+    # freezes this entire Streamlit app -- including its own connection
+    # back to your browser -- and something in the chain (Render/
+    # Cloudflare) can drop that connection before the wait is over,
+    # surfacing as a browser-side "Failed to fetch" even though the
+    # backend would have eventually succeeded. Splitting into several
+    # short pings keeps the app visibly alive and responsive instead.
+    status = st.empty()
+    api_awake = False
+    for attempt in range(1, 7):
+        status.info(f"Waking up the API... (attempt {attempt}/6)")
+        try:
+            health = httpx.get(f"{base_url}/health", timeout=15.0)
+            if health.status_code == 200:
+                api_awake = True
+                break
+        except httpx.HTTPError:
+            pass
+
+    response = None
+    if not api_awake:
+        status.error("API did not wake up after ~90s. Wait a moment and click Run Agent again.")
+    else:
+        status.info("API is awake — running the agent (usually 10-30s)...")
+        try:
+            response = httpx.post(f"{base_url}{endpoint_path}", json={"goal": goal}, timeout=90.0)
+        except httpx.HTTPError as exc:
+            status.error(f"Request failed: {exc}")
+            response = None
+        else:
+            status.empty()
+
+    if response is not None:
+        if response.status_code != 200:
+            st.error(f"HTTP {response.status_code}")
+            st.json(response.json())
+        else:
+            data = response.json()
+
+            st.markdown("### Step log (Think → Act → Observe)")
+            st.caption(
+                "Live trail of the agent's run: 'Think' steps only appear if the "
+                "model actually exposed reasoning content for that call -- some "
+                "models go straight from Act to Observe with no separate Think part."
+            )
+            steps = data.get("steps", [])
+            if not steps:
+                st.info("No tool calls were made for this task.")
+            for i, step in enumerate(steps, start=1):
+                kind = step.get("kind")
+                st.markdown(f"**Step {i}**")
+                if kind == "think":
+                    st.markdown("🧠 **Think:**")
+                    st.code(step["content"], language="text")
+                elif kind == "act":
+                    st.markdown(f"🔧 **Act:** called `{step['tool']}` with {step['content']}")
+                elif kind == "observe":
+                    st.markdown(f"👀 **Observe** (from `{step['tool']}`):")
+                    st.code(step["content"], language="text")
+                else:
+                    st.code(step, language="text")
+
+            st.divider()
+            st.markdown("### Final Answer")
+            st.success(data["answer"])
+
+            with st.expander("Full JSON response"):
+                st.json(data)
+
+
 with tab_agent:
-    st.subheader("POST /agent")
+    st.subheader("POST /agent  ·  POST /agent/mcp")
     st.caption(
         "The ADK on-call agent decides for itself how many times to call "
-        "search_runbooks before answering -- this isn't a fixed pipeline."
+        "search_runbooks before answering -- this isn't a fixed pipeline. "
+        "Same agent, same knowledge base, same tool -- the two buttons below "
+        "differ only in how the tool is reached: a plain in-process Python "
+        "function call, or a real MCP tool call (tools/list + tools/call "
+        "JSON-RPC) against mcp_server.py running as a stdio subprocess."
     )
 
     goal = st.text_area(
@@ -127,79 +207,19 @@ with tab_agent:
         placeholder="e.g. Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?",
     )
 
-    if st.button("Run Agent", type="primary"):
+    col_plain, col_mcp = st.columns(2)
+    run_plain = col_plain.button("Run Agent (Function Tool)", type="primary", use_container_width=True)
+    run_mcp = col_mcp.button("Run Agent (MCP Tool)", use_container_width=True)
+
+    if run_plain or run_mcp:
         if not goal.strip():
             st.error("A task/question is required.")
+        elif run_plain:
+            st.caption("Tool call transport: plain in-process Python function (`/agent`)")
+            run_agent_and_render("/agent", goal)
         else:
-            # Free-tier hosting means the API may be fully asleep (cold start
-            # can take 60-90s+). One giant blocking call for that whole window
-            # freezes this entire Streamlit app -- including its own connection
-            # back to your browser -- and something in the chain (Render/
-            # Cloudflare) can drop that connection before the wait is over,
-            # surfacing as a browser-side "Failed to fetch" even though the
-            # backend would have eventually succeeded. Splitting into several
-            # short pings keeps the app visibly alive and responsive instead.
-            status = st.empty()
-            api_awake = False
-            for attempt in range(1, 7):
-                status.info(f"Waking up the API... (attempt {attempt}/6)")
-                try:
-                    health = httpx.get(f"{base_url}/health", timeout=15.0)
-                    if health.status_code == 200:
-                        api_awake = True
-                        break
-                except httpx.HTTPError:
-                    pass
-
-            response = None
-            if not api_awake:
-                status.error("API did not wake up after ~90s. Wait a moment and click Run Agent again.")
-            else:
-                status.info("API is awake — running the agent (usually 10-30s)...")
-                try:
-                    response = httpx.post(f"{base_url}/agent", json={"goal": goal}, timeout=90.0)
-                except httpx.HTTPError as exc:
-                    status.error(f"Request failed: {exc}")
-                    response = None
-                else:
-                    status.empty()
-
-            if response is not None:
-                if response.status_code != 200:
-                    st.error(f"HTTP {response.status_code}")
-                    st.json(response.json())
-                else:
-                    data = response.json()
-
-                    st.markdown("### Step log (Think → Act → Observe)")
-                    st.caption(
-                        "Live trail of the agent's run: 'Think' steps only appear if the "
-                        "model actually exposed reasoning content for that call -- some "
-                        "models go straight from Act to Observe with no separate Think part."
-                    )
-                    steps = data.get("steps", [])
-                    if not steps:
-                        st.info("No tool calls were made for this task.")
-                    for i, step in enumerate(steps, start=1):
-                        kind = step.get("kind")
-                        st.markdown(f"**Step {i}**")
-                        if kind == "think":
-                            st.markdown("🧠 **Think:**")
-                            st.code(step["content"], language="text")
-                        elif kind == "act":
-                            st.markdown(f"🔧 **Act:** called `{step['tool']}` with {step['content']}")
-                        elif kind == "observe":
-                            st.markdown(f"👀 **Observe** (from `{step['tool']}`):")
-                            st.code(step["content"], language="text")
-                        else:
-                            st.code(step, language="text")
-
-                    st.divider()
-                    st.markdown("### Final Answer")
-                    st.success(data["answer"])
-
-                    with st.expander("Full JSON response"):
-                        st.json(data)
+            st.caption("Tool call transport: MCP protocol over stdio (`/agent/mcp`)")
+            run_agent_and_render("/agent/mcp", goal)
 
 with tab_debug:
     st.subheader("GET /debug/retrieve")

@@ -5,6 +5,7 @@ answering, cites sources, refuses when nothing relevant is found), and /ingest
 lets you add documents to the knowledge base it retrieves from.
 """
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -199,12 +200,16 @@ oncall_agent_mcp = Agent(
                 server_params=StdioServerParameters(
                     command=sys.executable,
                     args=[str(Path(__file__).resolve().parent / "mcp_server.py")],
+                    # StdioServerParameters does NOT auto-inherit the parent's
+                    # environment. Locally this was masked by .env existing on
+                    # disk (rag_core's load_dotenv found it regardless), but
+                    # .env is correctly gitignored and never deployed to
+                    # Render -- there, OPENAI_API_KEY/PINECONE_API_KEY only
+                    # exist in the parent process's real environment, so the
+                    # subprocess needs it passed explicitly or OpenAI() raises
+                    # immediately on import. Confirmed via Render logs.
+                    env=os.environ.copy(),
                 ),
-                # Render's free-tier CPU makes each MCP round trip meaningfully
-                # slower than the same call locally -- 30s was tight enough to
-                # produce empty runs in production even though search_runbooks
-                # itself always completed. 60s gives real headroom without
-                # masking a genuinely hung subprocess.
                 timeout=60.0,
             )
         )

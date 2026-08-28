@@ -17,12 +17,15 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
 from google.genai import types as genai_types
+from langfuse import get_client as get_langfuse_client
 from mcp import StdioServerParameters
 from pydantic import BaseModel, Field, ValidationError
 
+from eval_checks import run_all_checks
 from rag_core import (
     DEFAULT_MODEL,
     EMBEDDING_MODEL,
+    ONCALL_DOCUMENT_IDS,
     PINECONE_INDEX_NAME,
     RETRIEVAL_SCORE_THRESHOLD,
     Answer,
@@ -117,6 +120,46 @@ class AgentStep(BaseModel):
 class AgentResponse(BaseModel):
     answer: str
     steps: list[AgentStep] = Field(default_factory=list)
+
+
+class EvalCheckResult(BaseModel):
+    name: str
+    passed: bool
+    detail: str
+
+
+class EvalCaseResult(BaseModel):
+    question: str
+    checks: list[EvalCheckResult]
+
+
+class EvalRequest(BaseModel):
+    """Omit questions to run the built-in default set (the same questions
+    used to validate the citation-consistency fix)."""
+
+    questions: list[str] | None = None
+
+
+class EvalResponse(BaseModel):
+    cases: list[EvalCaseResult]
+    summary: dict[str, dict[str, int]]  # check name -> {"passed": n, "total": n}
+
+
+DEFAULT_EVAL_QUESTIONS = [
+    "Redis cache stampede: storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?",
+    "Kafka consumer lag is climbing on the order-events topic, what should I check?",
+    "TLS certificate is about to expire on the storefront domain, what do I do?",
+    "Checkout latency spiked, what should I check first?",
+    "we're seeing both webhook delivery delays AND payment gateway failures at the same time, are these related?",
+    "yo db connections maxed out again lol wat do",
+    "Can you restart the production database for me right now?",
+    "help",
+    "What's the admin password for the on-call runbook system?",
+    "disk space critical on one of the inventory sync boxes, walk me through it",
+    "we're overselling phantom stock again, same as last time I think? what's the fix",
+    "auth tokens are expiring in a storm pattern, seeing a spike in re-auth requests",
+    "rate limit 429s spiking on the API gateway, no recent deploy",
+]
 
 
 def compute_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -355,6 +398,12 @@ async def run_agent(agent: Agent, goal: str, max_llm_calls: int = AGENT_MAX_LLM_
     the tool name and a truncated string of its JSON return value.
     """
 
+    # Self-disables gracefully (logs a warning, no exception) when
+    # LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY aren't set -- verified directly
+    # before wiring this in, so this is safe to call unconditionally rather
+    # than gating on whether the env vars are present.
+    langfuse = get_langfuse_client()
+
     service = InMemorySessionService()
     runner = Runner(agent=agent, app_name="capstone_agent", session_service=service)
     session = await service.create_session(app_name="capstone_agent", user_id="agent_api_user")
@@ -364,46 +413,58 @@ async def run_agent(agent: Agent, goal: str, max_llm_calls: int = AGENT_MAX_LLM_
     steps: list[AgentStep] = []
     final_text = ""
 
-    try:
-        async for event in runner.run_async(
-            user_id="agent_api_user",
-            session_id=session.id,
-            new_message=content,
-            run_config=run_config,
-        ):
-            if not event.content or not event.content.parts:
-                continue
+    with langfuse.start_as_current_observation(
+        as_type="span", name=f"agent-run:{agent.name}", input={"goal": goal}
+    ) as span:
+        try:
+            async for event in runner.run_async(
+                user_id="agent_api_user",
+                session_id=session.id,
+                new_message=content,
+                run_config=run_config,
+            ):
+                if not event.content or not event.content.parts:
+                    continue
 
-            is_final = event.is_final_response()
+                is_final = event.is_final_response()
 
-            for part in event.content.parts:
-                if part.function_call:
-                    args = dict(part.function_call.args or {})
-                    steps.append(
-                        AgentStep(kind="act", tool=part.function_call.name, content=str(args))
-                    )
-                elif part.function_response:
-                    observation = str(part.function_response.response)
-                    if len(observation) > AGENT_OBSERVATION_MAX_CHARS:
-                        observation = observation[:AGENT_OBSERVATION_MAX_CHARS] + "..."
-                    steps.append(
-                        AgentStep(kind="observe", tool=part.function_response.name, content=observation)
-                    )
-                elif getattr(part, "thought", None):
-                    steps.append(AgentStep(kind="think", content=part.text or ""))
-                elif part.text and not is_final:
-                    # Some models put pre-final reasoning in a plain text part
-                    # without setting the `thought` flag -- still Think, not Final.
-                    steps.append(AgentStep(kind="think", content=part.text))
+                for part in event.content.parts:
+                    if part.function_call:
+                        args = dict(part.function_call.args or {})
+                        steps.append(
+                            AgentStep(kind="act", tool=part.function_call.name, content=str(args))
+                        )
+                    elif part.function_response:
+                        observation = str(part.function_response.response)
+                        if len(observation) > AGENT_OBSERVATION_MAX_CHARS:
+                            observation = observation[:AGENT_OBSERVATION_MAX_CHARS] + "..."
+                        steps.append(
+                            AgentStep(kind="observe", tool=part.function_response.name, content=observation)
+                        )
+                    elif getattr(part, "thought", None):
+                        steps.append(AgentStep(kind="think", content=part.text or ""))
+                    elif part.text and not is_final:
+                        # Some models put pre-final reasoning in a plain text part
+                        # without setting the `thought` flag -- still Think, not Final.
+                        steps.append(AgentStep(kind="think", content=part.text))
 
-            if is_final and event.content.parts:
-                final_text = event.content.parts[0].text or final_text
-    except Exception as exc:
-        # Covers real failure modes like Gemini quota/rate-limit errors, not just
-        # our own code -- never let a raw framework traceback reach the client.
-        raise HTTPException(
-            status_code=502,
-            detail=f"Agent invocation failed: {type(exc).__name__}: {str(exc)[:300]}",
+                if is_final and event.content.parts:
+                    final_text = event.content.parts[0].text or final_text
+        except Exception as exc:
+            span.update(
+                output={"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+                metadata={"step_count": len(steps)},
+            )
+            # Covers real failure modes like Gemini quota/rate-limit errors, not just
+            # our own code -- never let a raw framework traceback reach the client.
+            raise HTTPException(
+                status_code=502,
+                detail=f"Agent invocation failed: {type(exc).__name__}: {str(exc)[:300]}",
+            )
+
+        span.update(
+            output={"answer": final_text},
+            metadata={"step_count": len(steps), "tool_calls": [s.tool for s in steps if s.kind == "act"]},
         )
 
     if not final_text:
@@ -446,3 +507,40 @@ async def agent_mcp_endpoint(body: AgentRequest) -> AgentResponse:
         -d '{"goal": "Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?"}'
     """
     return await run_agent(oncall_agent_mcp, body.goal, max_llm_calls=AGENT_MCP_MAX_LLM_CALLS)
+
+
+@app.post("/eval")
+def eval_endpoint(body: EvalRequest) -> EvalResponse:
+    """
+    Run the code-based eval assertions (eval_checks.py) against fresh,
+    real search_runbooks() calls -- not against exported trace logs, which
+    truncate tool observations to AGENT_OBSERVATION_MAX_CHARS and can't
+    reliably be parsed back into structured sources_needed/citations.
+
+    curl (local):
+      curl -s -X POST http://127.0.0.1:8000/eval -H "Content-Type: application/json" -d '{}'
+    """
+
+    questions = body.questions or DEFAULT_EVAL_QUESTIONS
+    known_ids = set(ONCALL_DOCUMENT_IDS)
+    cases: list[EvalCaseResult] = []
+    summary: dict[str, dict[str, int]] = {}
+
+    for question in questions:
+        result = search_runbooks(question)
+        if "error" in result:
+            continue
+        checks = run_all_checks(result["answer"], result["sources_needed"], result["citations"], known_ids)
+        cases.append(
+            EvalCaseResult(
+                question=question,
+                checks=[EvalCheckResult(name=c.name, passed=c.passed, detail=c.detail) for c in checks],
+            )
+        )
+        for c in checks:
+            entry = summary.setdefault(c.name, {"passed": 0, "total": 0})
+            entry["total"] += 1
+            if c.passed:
+                entry["passed"] += 1
+
+    return EvalResponse(cases=cases, summary=summary)

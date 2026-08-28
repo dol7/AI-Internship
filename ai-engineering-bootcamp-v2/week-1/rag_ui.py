@@ -31,7 +31,7 @@ st.sidebar.caption(
     "No secrets are stored here -- the API holds its own keys server-side."
 )
 
-tab_ingest, tab_ask, tab_debug, tab_agent = st.tabs(["Ingest", "Ask", "Debug Retrieve", "Agent"])
+tab_ingest, tab_ask, tab_debug, tab_agent, tab_eval = st.tabs(["Ingest", "Ask", "Debug Retrieve", "Agent", "Eval"])
 
 with tab_ingest:
     st.subheader("POST /ingest")
@@ -263,3 +263,75 @@ with tab_debug:
 
                     with st.expander("Full JSON response"):
                         st.json(data)
+
+with tab_eval:
+    st.subheader("POST /eval")
+    st.caption(
+        "Runs the code-based assertions in eval_checks.py (citation allowlist, "
+        "sources_needed/citations consistency, no unauthorized-action claims) "
+        "against fresh search_runbooks() calls -- deterministic checks, not "
+        "LLM judgment. Uses a built-in default question set unless you supply "
+        "your own below, one per line."
+    )
+
+    custom_questions = st.text_area(
+        "Custom questions (optional, one per line -- leave blank to use the default set)",
+        height=100,
+    )
+
+    if st.button("Run Eval", type="primary"):
+        payload = {}
+        if custom_questions.strip():
+            payload["questions"] = [q.strip() for q in custom_questions.splitlines() if q.strip()]
+
+        status = st.empty()
+        api_awake = False
+        for attempt in range(1, 7):
+            status.info(f"Waking up the API... (attempt {attempt}/6)")
+            try:
+                health = httpx.get(f"{base_url}/health", timeout=15.0)
+                if health.status_code == 200:
+                    api_awake = True
+                    break
+            except httpx.HTTPError:
+                pass
+
+        response = None
+        if not api_awake:
+            status.error("API did not wake up after ~90s. Wait a moment and click Run Eval again.")
+        else:
+            status.info("API is awake — running eval (can take a minute for the full default set)...")
+            try:
+                response = httpx.post(f"{base_url}/eval", json=payload, timeout=180.0)
+            except httpx.HTTPError as exc:
+                status.error(f"Request failed: {exc}")
+                response = None
+            else:
+                status.empty()
+
+        if response is not None:
+            if response.status_code != 200:
+                st.error(f"HTTP {response.status_code}")
+                st.json(response.json())
+            else:
+                data = response.json()
+
+                st.markdown("### Summary")
+                summary = data["summary"]
+                cols = st.columns(len(summary)) if summary else []
+                for col, (name, counts) in zip(cols, summary.items()):
+                    rate = counts["passed"] / counts["total"] if counts["total"] else 0
+                    col.metric(name, f"{counts['passed']}/{counts['total']}", f"{rate:.0%}")
+
+                st.divider()
+                st.markdown("### Per-question results")
+                for case in data["cases"]:
+                    all_passed = all(c["passed"] for c in case["checks"])
+                    icon = "✅" if all_passed else "❌"
+                    with st.expander(f"{icon} {case['question']}", expanded=not all_passed):
+                        for c in case["checks"]:
+                            c_icon = "✅" if c["passed"] else "❌"
+                            st.markdown(f"{c_icon} **{c['name']}**: {c['detail']}")
+
+                with st.expander("Full JSON response"):
+                    st.json(data)

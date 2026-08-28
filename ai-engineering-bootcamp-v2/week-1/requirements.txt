@@ -3,7 +3,15 @@ google-adk
 google-genai
 httpx
 langchain-text-splitters
+langfuse
 mcp>=1.24,<2
+# langfuse's OTLP exporter forces opentelemetry-api/sdk 1.44.x, newer than
+# google-adk's declared <=1.42.1 ceiling. Verified directly (real /agent and
+# /agent/mcp runs, not just import) that ADK's actual runtime behavior is
+# unaffected -- pinning explicitly so pip doesn't silently resolve to
+# something else untested.
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
 openai
 pinecone
 python-dotenv

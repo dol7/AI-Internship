@@ -475,6 +475,14 @@ async def run_agent(
                     output={"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
                     metadata={"step_count": len(steps)},
                 )
+                # Render's free tier appears to freeze/deschedule background
+                # threads once the HTTP response is sent -- confirmed live:
+                # requests succeeded but queued spans never reached Langfuse
+                # until flush() was called synchronously here, before
+                # returning. Flushing on the error path too, not just
+                # success, since error traces are exactly the ones worth
+                # keeping.
+                langfuse.flush()
                 # Covers real failure modes like Gemini quota/rate-limit errors, not just
                 # our own code -- never let a raw framework traceback reach the client.
                 raise HTTPException(
@@ -486,6 +494,8 @@ async def run_agent(
                 output=[{"role": "assistant", "content": final_text}],
                 metadata={"step_count": len(steps), "tool_calls": [s.tool for s in steps if s.kind == "act"]},
             )
+
+    langfuse.flush()
 
     if not final_text:
         raise HTTPException(status_code=502, detail="Agent run ended without a final response.")

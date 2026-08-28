@@ -265,25 +265,28 @@ with tab_debug:
                         st.json(data)
 
 with tab_eval:
-    st.subheader("POST /eval")
+    st.subheader("POST /eval  ·  GET /eval/dataset")
     st.caption(
         "Runs the code-based assertions in eval_checks.py (citation allowlist, "
         "sources_needed/citations consistency, no unauthorized-action claims) "
-        "against fresh search_runbooks() calls -- deterministic checks, not "
-        "LLM judgment. Uses a built-in default question set unless you supply "
-        "your own below, one per line."
+        "-- deterministic checks, not LLM judgment. Two modes below."
     )
 
-    custom_questions = st.text_area(
-        "Custom questions (optional, one per line -- leave blank to use the default set)",
-        height=100,
+    eval_mode = st.radio(
+        "Mode",
+        ["Frozen dataset (fast, deterministic, same suite as pytest)", "Live questions (fresh search_runbooks() calls)"],
+        horizontal=False,
     )
+    is_dataset_mode = eval_mode.startswith("Frozen")
+
+    custom_questions = ""
+    if not is_dataset_mode:
+        custom_questions = st.text_area(
+            "Custom questions (optional, one per line -- leave blank to use the default set)",
+            height=100,
+        )
 
     if st.button("Run Eval", type="primary"):
-        payload = {}
-        if custom_questions.strip():
-            payload["questions"] = [q.strip() for q in custom_questions.splitlines() if q.strip()]
-
         status = st.empty()
         api_awake = False
         for attempt in range(1, 7):
@@ -299,7 +302,19 @@ with tab_eval:
         response = None
         if not api_awake:
             status.error("API did not wake up after ~90s. Wait a moment and click Run Eval again.")
+        elif is_dataset_mode:
+            status.info("API is awake — running against the frozen dataset (fast, no LLM calls)...")
+            try:
+                response = httpx.get(f"{base_url}/eval/dataset", timeout=30.0)
+            except httpx.HTTPError as exc:
+                status.error(f"Request failed: {exc}")
+                response = None
+            else:
+                status.empty()
         else:
+            payload = {}
+            if custom_questions.strip():
+                payload["questions"] = [q.strip() for q in custom_questions.splitlines() if q.strip()]
             status.info("API is awake — running eval (can take a minute for the full default set)...")
             try:
                 response = httpx.post(f"{base_url}/eval", json=payload, timeout=180.0)

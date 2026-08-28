@@ -5,6 +5,7 @@ answering, cites sources, refuses when nothing relevant is found), and /ingest
 lets you add documents to the knowledge base it retrieves from.
 """
 
+import json
 import os
 import sys
 import time
@@ -572,6 +573,47 @@ def eval_endpoint(body: EvalRequest) -> EvalResponse:
         cases.append(
             EvalCaseResult(
                 question=question,
+                checks=[EvalCheckResult(name=c.name, passed=c.passed, detail=c.detail) for c in checks],
+            )
+        )
+        for c in checks:
+            entry = summary.setdefault(c.name, {"passed": 0, "total": 0})
+            entry["total"] += 1
+            if c.passed:
+                entry["passed"] += 1
+
+    return EvalResponse(cases=cases, summary=summary)
+
+
+EVAL_DATASET_PATH = Path(__file__).resolve().parent / "eval_dataset" / "oncall-capstone-traces-annotated.jsonl"
+
+
+@app.get("/eval/dataset")
+def eval_dataset_endpoint() -> EvalResponse:
+    """
+    Run the same code-based assertions against the frozen, hand-annotated
+    dataset (eval_dataset/) instead of live search_runbooks() calls -- fast,
+    deterministic regression testing against real captured cases, not
+    re-querying the live model each time. Same dataset test_eval_checks.py
+    runs under pytest.
+
+    curl (local):
+      curl -s http://127.0.0.1:8000/eval/dataset
+    """
+
+    known_ids = set(ONCALL_DOCUMENT_IDS)
+    cases: list[EvalCaseResult] = []
+    summary: dict[str, dict[str, int]] = {}
+
+    with open(EVAL_DATASET_PATH) as f:
+        dataset_cases = [json.loads(line) for line in f]
+
+    for case in dataset_cases:
+        output = case["output"]
+        checks = run_all_checks(output["answer"], output["sources_needed"], output["citations"], known_ids)
+        cases.append(
+            EvalCaseResult(
+                question=f"[{case['trace_id']}] {case['input']}",
                 checks=[EvalCheckResult(name=c.name, passed=c.passed, detail=c.detail) for c in checks],
             )
         )

@@ -211,7 +211,14 @@ def call_rag_structured(question: str, model: str) -> tuple[Answer, int, int, in
     # right next to sources_needed: true). Enforcing it here instead of just
     # asking nicely: if the model says the context doesn't answer the
     # question, it doesn't get to also present citations as if it does.
-    if parsed.sources_needed and parsed.citations:
+    #
+    # DEMO_DISABLE_CITATION_GUARD: off (safe) by default. Exists ONLY to
+    # reproduce the pre-fix behavior on demand for a before/after screenshot
+    # pair -- flip it on Render, screenshot the Eval tab showing real
+    # failures, flip it back off (or delete the var), screenshot again.
+    # Never set this in a deployment meant to serve real traffic.
+    guard_disabled = os.environ.get("DEMO_DISABLE_CITATION_GUARD", "").lower() == "true"
+    if parsed.sources_needed and parsed.citations and not guard_disabled:
         parsed.citations = []
     # Defense-in-depth beyond the retrieval-layer document_id filter: strip
     # any citation that isn't a real knowledge-base document, in case a

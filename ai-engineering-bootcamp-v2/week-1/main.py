@@ -49,9 +49,17 @@ app = FastAPI()
 # load_dotenv(), so real credentials are in the environment by this point.
 # Must run before any Agent()/Runner construction below.
 langfuse = get_langfuse_client()
-langfuse_auth_ok = langfuse.auth_check()
-if not langfuse_auth_ok:
-    print("Langfuse auth_check() failed -- tracing will be silently disabled/rejected. Check LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY/LANGFUSE_BASE_URL.")
+try:
+    # auth_check() raises on bad credentials (confirmed live: a real 401
+    # crashed the whole app at startup, "Exited with status 1") -- it does
+    # NOT just return False the way missing credentials do. Tracing must
+    # never be able to take down the actual on-call agent, so this is
+    # caught and only logged.
+    langfuse_auth_ok = langfuse.auth_check()
+    if not langfuse_auth_ok:
+        print("Langfuse auth_check() returned False -- tracing will be disabled. Check LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY/LANGFUSE_BASE_URL.")
+except Exception as exc:
+    print(f"Langfuse auth_check() raised {type(exc).__name__}: {str(exc)[:300]} -- tracing will be disabled, app startup continues.")
 GoogleADKInstrumentor().instrument()
 
 # Stage 5 — per-1K-token input/output USD (derived from OpenAI list prices).

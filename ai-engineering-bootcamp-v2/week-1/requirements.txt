@@ -5,6 +5,7 @@ httpx
 langchain-text-splitters
 langfuse
 mcp>=1.24,<2
+openinference-instrumentation-google-adk
 # langfuse's OTLP exporter forces opentelemetry-api/sdk 1.44.x, newer than
 # google-adk's declared <=1.42.1 ceiling. Verified directly (real /agent and
 # /agent/mcp runs, not just import) that ADK's actual runtime behavior is

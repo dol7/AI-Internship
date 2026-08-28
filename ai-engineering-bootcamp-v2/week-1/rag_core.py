@@ -11,12 +11,19 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from openai import OpenAI
 from pinecone import Pinecone, ServerlessSpec
 from pydantic import BaseModel, Field, ValidationError
 
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(_ENV_PATH)
+
+# langfuse.openai is a drop-in replacement for openai.OpenAI -- same client,
+# but every completions/embeddings call is auto-captured as a Langfuse
+# 'generation' observation with model name and token usage, no manual
+# instrumentation needed. Self-disables the same way get_client() does when
+# LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY aren't set -- the OpenAI calls
+# themselves are completely unaffected either way.
+from langfuse.openai import OpenAI
 
 client = OpenAI()  # Reads OPENAI_API_KEY from the environment; never hardcode keys.
 

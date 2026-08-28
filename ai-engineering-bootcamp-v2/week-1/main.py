@@ -18,7 +18,9 @@ from google.adk.sessions import InMemorySessionService
 from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
 from google.genai import types as genai_types
 from langfuse import get_client as get_langfuse_client
+from langfuse import propagate_attributes
 from mcp import StdioServerParameters
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 from pydantic import BaseModel, Field, ValidationError
 
 from eval_checks import run_all_checks
@@ -39,6 +41,18 @@ from rag_core import (
 )
 
 app = FastAPI()
+
+# Per the Langfuse ADK integration: real instrumentation via OpenTelemetry,
+# not a hand-rolled span (a bare manual span misses model name, token usage,
+# and correct observation types entirely -- confirmed this was the gap in
+# the first attempt at this). Importing rag_core above already ran
+# load_dotenv(), so real credentials are in the environment by this point.
+# Must run before any Agent()/Runner construction below.
+langfuse = get_langfuse_client()
+langfuse_auth_ok = langfuse.auth_check()
+if not langfuse_auth_ok:
+    print("Langfuse auth_check() failed -- tracing will be silently disabled/rejected. Check LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY/LANGFUSE_BASE_URL.")
+GoogleADKInstrumentor().instrument()
 
 # Stage 5 — per-1K-token input/output USD (derived from OpenAI list prices).
 MODEL_PRICES_PER_1K: dict[str, tuple[float, float]] = {
@@ -388,7 +402,9 @@ def ask(body: AskRequest) -> AskResponse:
     )
 
 
-async def run_agent(agent: Agent, goal: str, max_llm_calls: int = AGENT_MAX_LLM_CALLS) -> AgentResponse:
+async def run_agent(
+    agent: Agent, goal: str, max_llm_calls: int = AGENT_MAX_LLM_CALLS, transport: str = "function-tool"
+) -> AgentResponse:
     """
     Shared driver behind /agent and /agent/mcp: invoke the given ADK agent
     with a goal, not a single fixed question -- it decides for itself how
@@ -397,12 +413,6 @@ async def run_agent(agent: Agent, goal: str, max_llm_calls: int = AGENT_MAX_LLM_
     includes API keys or environment variables -- steps only ever contain
     the tool name and a truncated string of its JSON return value.
     """
-
-    # Self-disables gracefully (logs a warning, no exception) when
-    # LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY aren't set -- verified directly
-    # before wiring this in, so this is safe to call unconditionally rather
-    # than gating on whether the env vars are present.
-    langfuse = get_langfuse_client()
 
     service = InMemorySessionService()
     runner = Runner(agent=agent, app_name="capstone_agent", session_service=service)
@@ -413,59 +423,69 @@ async def run_agent(agent: Agent, goal: str, max_llm_calls: int = AGENT_MAX_LLM_
     steps: list[AgentStep] = []
     final_text = ""
 
-    with langfuse.start_as_current_observation(
-        as_type="span", name=f"agent-run:{agent.name}", input={"goal": goal}
-    ) as span:
-        try:
-            async for event in runner.run_async(
-                user_id="agent_api_user",
-                session_id=session.id,
-                new_message=content,
-                run_config=run_config,
-            ):
-                if not event.content or not event.content.parts:
-                    continue
+    # as_type="agent" (not the generic "span" default) -- this observation
+    # genuinely represents an agent's execution, and ADK's own tool/LLM
+    # calls (auto-instrumented via GoogleADKInstrumentor above) nest under
+    # it as siblings, not children of each other. Verb-first name and
+    # role/content input, per Langfuse's own best-practices guidance
+    # (fetched fresh, not assumed) -- not the agent's internal ADK name,
+    # and not a bare unlabeled dict.
+    with propagate_attributes(tags=[f"transport:{transport}"]):
+        with langfuse.start_as_current_observation(
+            as_type="agent",
+            name="triage-oncall-incident",
+            input=[{"role": "user", "content": goal}],
+        ) as span:
+            try:
+                async for event in runner.run_async(
+                    user_id="agent_api_user",
+                    session_id=session.id,
+                    new_message=content,
+                    run_config=run_config,
+                ):
+                    if not event.content or not event.content.parts:
+                        continue
 
-                is_final = event.is_final_response()
+                    is_final = event.is_final_response()
 
-                for part in event.content.parts:
-                    if part.function_call:
-                        args = dict(part.function_call.args or {})
-                        steps.append(
-                            AgentStep(kind="act", tool=part.function_call.name, content=str(args))
-                        )
-                    elif part.function_response:
-                        observation = str(part.function_response.response)
-                        if len(observation) > AGENT_OBSERVATION_MAX_CHARS:
-                            observation = observation[:AGENT_OBSERVATION_MAX_CHARS] + "..."
-                        steps.append(
-                            AgentStep(kind="observe", tool=part.function_response.name, content=observation)
-                        )
-                    elif getattr(part, "thought", None):
-                        steps.append(AgentStep(kind="think", content=part.text or ""))
-                    elif part.text and not is_final:
-                        # Some models put pre-final reasoning in a plain text part
-                        # without setting the `thought` flag -- still Think, not Final.
-                        steps.append(AgentStep(kind="think", content=part.text))
+                    for part in event.content.parts:
+                        if part.function_call:
+                            args = dict(part.function_call.args or {})
+                            steps.append(
+                                AgentStep(kind="act", tool=part.function_call.name, content=str(args))
+                            )
+                        elif part.function_response:
+                            observation = str(part.function_response.response)
+                            if len(observation) > AGENT_OBSERVATION_MAX_CHARS:
+                                observation = observation[:AGENT_OBSERVATION_MAX_CHARS] + "..."
+                            steps.append(
+                                AgentStep(kind="observe", tool=part.function_response.name, content=observation)
+                            )
+                        elif getattr(part, "thought", None):
+                            steps.append(AgentStep(kind="think", content=part.text or ""))
+                        elif part.text and not is_final:
+                            # Some models put pre-final reasoning in a plain text part
+                            # without setting the `thought` flag -- still Think, not Final.
+                            steps.append(AgentStep(kind="think", content=part.text))
 
-                if is_final and event.content.parts:
-                    final_text = event.content.parts[0].text or final_text
-        except Exception as exc:
+                    if is_final and event.content.parts:
+                        final_text = event.content.parts[0].text or final_text
+            except Exception as exc:
+                span.update(
+                    output={"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+                    metadata={"step_count": len(steps)},
+                )
+                # Covers real failure modes like Gemini quota/rate-limit errors, not just
+                # our own code -- never let a raw framework traceback reach the client.
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Agent invocation failed: {type(exc).__name__}: {str(exc)[:300]}",
+                )
+
             span.update(
-                output={"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
-                metadata={"step_count": len(steps)},
+                output=[{"role": "assistant", "content": final_text}],
+                metadata={"step_count": len(steps), "tool_calls": [s.tool for s in steps if s.kind == "act"]},
             )
-            # Covers real failure modes like Gemini quota/rate-limit errors, not just
-            # our own code -- never let a raw framework traceback reach the client.
-            raise HTTPException(
-                status_code=502,
-                detail=f"Agent invocation failed: {type(exc).__name__}: {str(exc)[:300]}",
-            )
-
-        span.update(
-            output={"answer": final_text},
-            metadata={"step_count": len(steps), "tool_calls": [s.tool for s in steps if s.kind == "act"]},
-        )
 
     if not final_text:
         raise HTTPException(status_code=502, detail="Agent run ended without a final response.")
@@ -489,7 +509,7 @@ async def agent_endpoint(body: AgentRequest) -> AgentResponse:
         -H "Content-Type: application/json" \
         -d '{"goal": "Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?"}'
     """
-    return await run_agent(oncall_agent, body.goal)
+    return await run_agent(oncall_agent, body.goal, transport="function-tool")
 
 
 @app.post("/agent/mcp")
@@ -506,7 +526,7 @@ async def agent_mcp_endpoint(body: AgentRequest) -> AgentResponse:
         -H "Content-Type: application/json" \
         -d '{"goal": "Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?"}'
     """
-    return await run_agent(oncall_agent_mcp, body.goal, max_llm_calls=AGENT_MCP_MAX_LLM_CALLS)
+    return await run_agent(oncall_agent_mcp, body.goal, max_llm_calls=AGENT_MCP_MAX_LLM_CALLS, transport="mcp")
 
 
 @app.post("/eval")

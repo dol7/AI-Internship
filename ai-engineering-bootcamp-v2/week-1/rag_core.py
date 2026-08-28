@@ -198,6 +198,19 @@ def call_rag_structured(question: str, model: str) -> tuple[Answer, int, int, in
     if parsed is None:
         raise ValueError("Model returned no parseable structured output")
 
+    # Two prompt-engineering iterations didn't reliably stop adjacent-content
+    # over-reach (citing an unrelated document's steps as if they applied --
+    # e.g. citing an S3 upload-speed runbook for a checkout-latency question,
+    # right next to sources_needed: true). Enforcing it here instead of just
+    # asking nicely: if the model says the context doesn't answer the
+    # question, it doesn't get to also present citations as if it does.
+    if parsed.sources_needed and parsed.citations:
+        parsed.citations = []
+    # Defense-in-depth beyond the retrieval-layer document_id filter: strip
+    # any citation that isn't a real knowledge-base document, in case a
+    # future ingest or index change reintroduces contamination.
+    parsed.citations = [c for c in parsed.citations if c in ONCALL_DOCUMENT_IDS]
+
     usage = completion.usage
     total = usage.total_tokens if usage else 0
     prompt_tokens = usage.prompt_tokens if usage else 0

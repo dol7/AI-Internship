@@ -17,6 +17,7 @@ fetch/upsert/delete/list, never similarity search, so the embedding
 machinery is irrelevant here; only the metadata payload matters.
 """
 
+import re
 from datetime import datetime, timezone
 
 from openai import OpenAI as _RawOpenAI  # gate classifier does not need Langfuse wrapping
@@ -32,6 +33,22 @@ _DUMMY_VECTOR = [1e-6] * EMBEDDING_DIMENSION
 
 _gate_client = _RawOpenAI()
 GATE_MODEL = "gpt-4o-mini"  # cheap classifier call, not the main answer model
+
+
+def _slugify_key(key: str) -> str:
+    """Normalize any key to a Pinecone-safe vector ID.
+
+    Found by real testing against live Pinecone, not from docs: a vector ID
+    containing a space upserts with upserted_count=1 (reports success) but
+    is then never fetchable by that exact ID -- silently unreadable, not an
+    error. Reproduced directly against the SDK, independent of this app's
+    code. The gate classifier's LLM-proposed keys aren't guaranteed to be
+    space-free (e.g. "db escalation rule"), so every entry point funnels
+    through this before touching Pinecone.
+    """
+
+    slug = re.sub(r"[^a-z0-9]+", "-", key.strip().lower()).strip("-")
+    return slug or "untitled"
 
 
 class MemoryFact(BaseModel):
@@ -94,11 +111,12 @@ def memory_replace(key: str, value: str, category: str = "other") -> MemoryFact:
     """Direct, ungated write -- upsert is inherently replace-if-exists.
     Used by gate_and_write() and available directly for the CLI/admin path."""
 
-    fact = MemoryFact(key=key, value=value, category=category, written_at=datetime.now(timezone.utc).isoformat())
+    slug = _slugify_key(key)
+    fact = MemoryFact(key=slug, value=value, category=category, written_at=datetime.now(timezone.utc).isoformat())
     pinecone_index.upsert(
         vectors=[
             {
-                "id": key,
+                "id": slug,
                 "values": _DUMMY_VECTOR,
                 "metadata": {"value": fact.value, "category": fact.category, "written_at": fact.written_at},
             }
@@ -109,12 +127,13 @@ def memory_replace(key: str, value: str, category: str = "other") -> MemoryFact:
 
 
 def memory_get(key: str) -> MemoryFact | None:
-    result = pinecone_index.fetch(ids=[key], namespace=MEMORY_NAMESPACE)
+    slug = _slugify_key(key)
+    result = pinecone_index.fetch(ids=[slug], namespace=MEMORY_NAMESPACE)
     vectors = result.vectors if hasattr(result, "vectors") else result.get("vectors", {})
-    if key not in vectors:
+    if slug not in vectors:
         return None
-    meta = vectors[key].metadata
-    return MemoryFact(key=key, value=meta["value"], category=meta["category"], written_at=meta["written_at"])
+    meta = vectors[slug].metadata
+    return MemoryFact(key=slug, value=meta["value"], category=meta["category"], written_at=meta["written_at"])
 
 
 def memory_list() -> list[MemoryFact]:
@@ -133,4 +152,4 @@ def memory_list() -> list[MemoryFact]:
 
 
 def memory_delete(key: str) -> None:
-    pinecone_index.delete(ids=[key], namespace=MEMORY_NAMESPACE)
+    pinecone_index.delete(ids=[_slugify_key(key)], namespace=MEMORY_NAMESPACE)

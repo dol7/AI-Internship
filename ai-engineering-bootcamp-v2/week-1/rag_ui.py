@@ -31,7 +31,9 @@ st.sidebar.caption(
     "No secrets are stored here -- the API holds its own keys server-side."
 )
 
-tab_ingest, tab_ask, tab_debug, tab_agent, tab_eval = st.tabs(["Ingest", "Ask", "Debug Retrieve", "Agent", "Eval"])
+tab_ingest, tab_ask, tab_debug, tab_agent, tab_eval, tab_memory = st.tabs(
+    ["Ingest", "Ask", "Debug Retrieve", "Agent", "Eval", "Memory"]
+)
 
 with tab_ingest:
     st.subheader("POST /ingest")
@@ -350,3 +352,97 @@ with tab_eval:
 
                 with st.expander("Full JSON response"):
                     st.json(data)
+
+with tab_memory:
+    st.subheader("GET/PUT/DELETE /memory  ·  POST /memory/write-gated")
+    st.caption(
+        "Durable human memory: stable corrections, preferences, and "
+        "last-successful-fix notes -- not the agent's tool output, which "
+        "stays ephemeral. Backed by a dedicated Pinecone namespace, not "
+        "local disk, so it survives a full server restart (Render's free "
+        "tier wipes local files on every restart/redeploy -- verified "
+        "against their docs, which is why this isn't a SQLite file)."
+    )
+
+    st.markdown("### Write (gated)")
+    st.caption(
+        "Free text goes through a classifier first -- only a stable "
+        "correction/preference/fix-note gets persisted. A one-off question "
+        "or raw tool output is classified and discarded, not written."
+    )
+    gate_text = st.text_area(
+        "Text to consider for memory",
+        placeholder="e.g. Always page the DBA on-call for database issues, not general platform on-call.",
+        height=80,
+    )
+    if st.button("Submit for gated write", type="primary"):
+        if not gate_text.strip():
+            st.error("Text is required.")
+        else:
+            try:
+                r = httpx.post(f"{base_url}/memory/write-gated", json={"text": gate_text}, timeout=30.0)
+            except httpx.HTTPError as exc:
+                st.error(f"Request failed: {exc}")
+            else:
+                if r.status_code != 200:
+                    st.error(f"HTTP {r.status_code}")
+                    st.json(r.json())
+                else:
+                    d = r.json()
+                    if d["should_persist"]:
+                        st.success(f"Persisted under key `{d['key']}` ({d['category']}): {d['value']}")
+                    else:
+                        st.warning(f"Discarded, not written: {d['reason']}")
+                    with st.expander("Full decision JSON"):
+                        st.json(d)
+
+    st.divider()
+    st.markdown("### Look up a fact by key")
+    st.caption(
+        "Each lookup below is a fresh GET request to the API -- nothing is "
+        "cached in this browser tab's session. If you wrote a fact above, "
+        "reload this page entirely (or ask someone else to open this same "
+        "URL) and look it up again -- it's still there, because it never "
+        "lived in Streamlit's session state to begin with."
+    )
+    lookup_key = st.text_input("Key", placeholder="e.g. db-issues-escalation")
+    if st.button("Look up"):
+        if not lookup_key.strip():
+            st.error("Key is required.")
+        else:
+            try:
+                r = httpx.get(f"{base_url}/memory/{lookup_key.strip()}", timeout=30.0)
+            except httpx.HTTPError as exc:
+                st.error(f"Request failed: {exc}")
+            else:
+                if r.status_code == 404:
+                    st.info(f"No fact stored under key `{lookup_key}`.")
+                elif r.status_code != 200:
+                    st.error(f"HTTP {r.status_code}")
+                    st.json(r.json())
+                else:
+                    st.json(r.json())
+
+    st.divider()
+    st.markdown("### All stored facts")
+    if st.button("Refresh list"):
+        try:
+            r = httpx.get(f"{base_url}/memory", timeout=30.0)
+        except httpx.HTTPError as exc:
+            st.error(f"Request failed: {exc}")
+        else:
+            if r.status_code != 200:
+                st.error(f"HTTP {r.status_code}")
+                st.json(r.json())
+            else:
+                facts = r.json()
+                if not facts:
+                    st.info("No facts stored yet.")
+                else:
+                    for f in facts:
+                        with st.expander(f"`{f['key']}` ({f['category']})"):
+                            st.write(f["value"])
+                            st.caption(f"written_at: {f['written_at']}")
+                            if st.button("Forget this", key=f"forget-{f['key']}"):
+                                httpx.delete(f"{base_url}/memory/{f['key']}", timeout=30.0)
+                                st.rerun()

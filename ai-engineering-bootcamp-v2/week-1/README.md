@@ -63,6 +63,39 @@ Requires `.venv` and a valid `OPENAI_API_KEY`:
 python test_all_stages.py
 ```
 
+## Durable memory
+
+The agent has a small human-memory store, separate from its RAG knowledge
+base: **what** it keeps is stable corrections, preferences, and
+last-successful-fix notes (e.g. "always page the DBA on-call for database
+issues"), never ephemeral tool output like raw `search_runbooks()` results,
+which is regeneratable and doesn't belong in long-term memory. **When** it
+writes: either directly via `PUT /memory/{key}`, or through a gate —
+`POST /memory/write-gated` sends free text to a small classifier
+(`gpt-4o-mini`) that decides whether it's a durable fact worth keeping or a
+one-off question/diagnostic that should just be discarded, and only
+persists in the former case. **Where** it lives: a dedicated `"memory"`
+namespace in the same Pinecone index the RAG documents already use, not a
+file on local disk — Render's free tier wipes local disk on every restart
+or redeploy, so a SQLite/JSON file would not actually be durable there.
+**How** it's retrieved: `GET /memory/{key}` or `GET /memory` (list all),
+both plain key/value fetches, no similarity search involved. **When it's
+forgotten:** only on an explicit `DELETE /memory/{key}` — there's no TTL or
+auto-expiry yet, so today "forget" is a human decision, not an automatic
+one. Try it end-to-end with `memory_cli.py` (talks to the deployed API by
+default, so a write from one process and a read from a completely separate,
+later process is a real cross-session test, not just an in-memory demo):
+
+```bash
+python memory_cli.py write db-issues-escalation "Page the DBA on-call for database issues, not general platform on-call." --category escalation_rule
+python memory_cli.py read db-issues-escalation
+python memory_cli.py gated-write "What's the current error rate on checkout?"   # discarded, not a durable fact
+python memory_cli.py list
+python memory_cli.py forget db-issues-escalation
+```
+
+Or in Streamlit, under the **Memory** tab.
+
 ## Project layout
 
 ```

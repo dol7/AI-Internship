@@ -25,6 +25,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 from pydantic import BaseModel, Field, ValidationError
 
 from eval_checks import run_all_checks
+from memory_store import GateDecision, MemoryFact, gate_and_write, memory_delete, memory_get, memory_list, memory_replace
 from rag_core import (
     DEFAULT_MODEL,
     EMBEDDING_MODEL,
@@ -624,3 +625,61 @@ def eval_dataset_endpoint() -> EvalResponse:
                 entry["passed"] += 1
 
     return EvalResponse(cases=cases, summary=summary)
+
+
+class MemoryWriteRequest(BaseModel):
+    key: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    category: str = "other"
+
+
+class MemoryGatedWriteRequest(BaseModel):
+    text: str = Field(min_length=1)
+
+
+@app.get("/memory")
+def memory_list_endpoint() -> list[MemoryFact]:
+    """List every durably stored fact. Backed by a dedicated Pinecone
+    namespace, not local disk -- survives restart/redeploy.
+
+    curl: curl -s https://ai-internship-5euv.onrender.com/memory
+    """
+    return memory_list()
+
+
+@app.get("/memory/{key}")
+def memory_get_endpoint(key: str) -> MemoryFact:
+    fact = memory_get(key)
+    if fact is None:
+        raise HTTPException(status_code=404, detail=f"No memory fact stored under key '{key}'.")
+    return fact
+
+
+@app.put("/memory/{key}")
+def memory_replace_endpoint(key: str, body: MemoryWriteRequest) -> MemoryFact:
+    """Direct, ungated write/replace -- upsert semantics (creates or
+    overwrites). For CLI/admin use, bypassing the write gate. Use
+    POST /memory/write-gated for the gated path that decides on its own
+    whether text is worth persisting.
+    """
+    return memory_replace(key, body.value, body.category)
+
+
+@app.delete("/memory/{key}")
+def memory_delete_endpoint(key: str) -> dict[str, str]:
+    memory_delete(key)
+    return {"status": "deleted", "key": key}
+
+
+@app.post("/memory/write-gated")
+def memory_gated_write_endpoint(body: MemoryGatedWriteRequest) -> GateDecision:
+    """Only persists text that passes the gate (a stable correction,
+    preference, or last-successful-fix note) -- ephemeral tool output and
+    one-off questions are classified and discarded, not written. Always
+    returns the decision, including discards, so the caller can see why.
+
+    curl: curl -s -X POST https://ai-internship-5euv.onrender.com/memory/write-gated \
+      -H "Content-Type: application/json" \
+      -d '{"text": "Always check the coalescing flag first for Redis cache stampede questions."}'
+    """
+    return gate_and_write(body.text)

@@ -4,7 +4,7 @@ Live UI: https://ai-internship-streamlit-ui.onrender.com — open this before yo
 
 ## 0:00–0:30 — The problem, in one breath
 
-"When something breaks in production, the on-call engineer's first move is 'has this happened before, and what fixed it?' — but that answer is scattered across old runbooks and postmortems. This agent answers on-call questions grounded in the team's real docs, cites what it used, and won't make up a source it doesn't have."
+"When something breaks in production, the on-call engineer's first move is 'has this happened before, and what fixed it?' — but that answer is scattered across old runbooks and postmortems. This agent answers on-call questions for a Shopify Plus-style ecommerce platform, grounded in the team's real docs — cites what it used, and won't make up a source it doesn't have." (Knowledge base models real Shopify Plus mechanics — Admin API, custom-domain SSL, inventory sync — worth naming if the room is technical.)
 
 ## 0:30–2:00 — Core task, live
 

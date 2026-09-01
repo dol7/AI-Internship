@@ -4,7 +4,7 @@ Story, in order: **problem → architecture → stack → live demo.** Everythin
 
 ## Problem
 
-When something breaks in production, the on-call engineer's first move is usually "has this happened before, and what fixed it?" — but that answer is scattered across old runbooks, postmortems, and whoever remembers the last incident. This agent answers on-call questions grounded in the team's actual runbooks and postmortems, cites what it used, refuses to fabricate a source when it doesn't have one, and remembers standing rules across sessions instead of re-asking every time.
+When something breaks in production, the on-call engineer's first move is usually "has this happened before, and what fixed it?" — but that answer is scattered across old runbooks, postmortems, and whoever remembers the last incident. This agent answers on-call questions for a Shopify Plus-style ecommerce platform — Admin API/webhook failures, custom-domain SSL, inventory sync — grounded in the team's actual runbooks and postmortems, cites what it used, refuses to fabricate a source when it doesn't have one, and remembers standing rules across sessions instead of re-asking every time.
 
 ## Architecture
 

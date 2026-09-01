@@ -10,7 +10,7 @@ A case study, in order: **problem → architecture → stack → evals → memor
 
 ### Problem
 
-When something breaks in production, the on-call engineer's first move is usually "has this happened before, and what fixed it?" — but that answer is scattered across old internal documents and whoever happens to remember the last incident. This agent answers on-call questions grounded in the team's own incident history, tells you which document it used, refuses to make up an answer when it doesn't have one, and remembers standing instructions across sessions instead of asking again every time.
+When something breaks in production, the on-call engineer's first move is usually "has this happened before, and what fixed it?" — but that answer is scattered across old internal documents and whoever happens to remember the last incident. This agent answers on-call questions for a Shopify Plus-style ecommerce platform — cache stampedes, checkout latency, Admin API/webhook failures, custom-domain SSL issues — grounded in the team's own incident history, tells you which document it used, refuses to make up an answer when it doesn't have one, and remembers standing instructions across sessions instead of asking again every time. The knowledge base itself models real Shopify Plus platform mechanics (the Admin API, GraphQL inventory sync, custom-domain SSL provisioning), not generic infrastructure docs.
 
 ### Architecture
 

@@ -1,6 +1,6 @@
 # Interview talking points — three decisions, one breath each
 
-Three specific decisions, not a feature list. Each is **decision → why → evidence**, sized to say in one breath.
+Three specific decisions, not a feature list. Each is **decision → why → evidence**, sized to say in one breath. Domain, if it comes up: the knowledge base models real Shopify Plus platform mechanics — Admin API, custom-domain SSL provisioning, GraphQL inventory sync — not generic infra docs, which is what makes "the agent searched twice" or "the citation was wrong" concrete rather than abstract.
 
 ## 1. Why an agent, not a fixed workflow
 

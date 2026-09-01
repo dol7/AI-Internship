@@ -21,8 +21,13 @@ import httpx
 import streamlit as st
 
 st.set_page_config(page_title="RAG + Agent Service UI", layout="wide")
-st.title("Capstone Service — Ingest, Ask, Debug, Agent")
-st.caption("Thin client only. All RAG and agent logic lives in the API, not here.")
+st.title("On-Call Incident Triage Agent")
+st.caption(
+    "Ask an on-call question below and get an answer grounded in real "
+    "runbooks and postmortems, with citations -- start in the **Agent** "
+    "tab. (Eval and Memory show the proof-of-work behind it; Debug "
+    "Retrieve and Ingest are internal dev tooling used to build this.)"
+)
 
 default_base_url = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
 base_url = st.sidebar.text_input("API base URL", value=default_base_url).rstrip("/")
@@ -31,8 +36,8 @@ st.sidebar.caption(
     "No secrets are stored here -- the API holds its own keys server-side."
 )
 
-tab_ingest, tab_ask, tab_debug, tab_agent, tab_eval, tab_memory = st.tabs(
-    ["Ingest", "Ask", "Debug Retrieve", "Agent", "Eval", "Memory"]
+tab_agent, tab_ask, tab_eval, tab_memory, tab_debug, tab_ingest = st.tabs(
+    ["Agent", "Ask", "Eval", "Memory", "Debug Retrieve", "Ingest"]
 )
 
 with tab_ingest:
@@ -195,15 +200,21 @@ def run_agent_and_render(endpoint_path: str, goal: str) -> None:
 
 
 with tab_agent:
-    st.subheader("POST /agent  ·  POST /agent/mcp")
-    st.caption(
-        "The ADK on-call agent decides for itself how many times to call "
-        "search_runbooks before answering -- this isn't a fixed pipeline. "
-        "Same agent, same knowledge base, same tool -- the two buttons below "
-        "differ only in how the tool is reached: a plain in-process Python "
-        "function call, or a real MCP tool call (tools/list + tools/call "
-        "JSON-RPC) against mcp_server.py running as a stdio subprocess."
+    st.markdown(
+        "Ask a real on-call question -- e.g. a latency spike, an error-rate "
+        "jump, a cache issue. The agent searches the team's actual runbooks "
+        "and postmortems and answers grounded in what it finds, citing which "
+        "document it used. It won't invent a source it doesn't have."
     )
+    with st.expander("How this works under the hood"):
+        st.caption(
+            "The ADK on-call agent decides for itself how many times to call "
+            "search_runbooks before answering -- this isn't a fixed pipeline. "
+            "Same agent, same knowledge base, same tool -- the two buttons below "
+            "differ only in how the tool is reached: a plain in-process Python "
+            "function call, or a real MCP tool call (tools/list + tools/call "
+            "JSON-RPC) against mcp_server.py running as a stdio subprocess."
+        )
 
     goal = st.text_area(
         "Task / question for the agent",

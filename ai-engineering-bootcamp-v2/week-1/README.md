@@ -48,6 +48,8 @@ FastAPI + Google ADK (`Agent`, `Runner`, `InMemorySessionService`) for the agent
 
 Open-coded 20 sample traces plus 15+ of my own capstone runs into a failure taxonomy (4+ categories), ranked by frequency × impact. Top failure: the agent would sometimes assert `sources_needed=true` but attach citations inconsistently — a real grounding gap, not a cosmetic one. Two rounds of prompt-only fixes (a checklist, then a stricter two-gate rewrite) each measurably improved but did not eliminate it. Shipped a deterministic code-level fix instead — `rag_core.py`'s `call_rag_structured` now force-clears citations whenever `sources_needed=True` fails its own consistency check, rather than trusting the model to self-police. Re-running the same 13 real questions: with the guard disabled (`DEMO_DISABLE_CITATION_GUARD=true`, i.e. the old prompt-only behavior), `sources_needed_citation_consistency` landed at 54–69% (7–9 / 13) across runs — genuine LLM sampling variance, not cherry-picked. With the guard on (shipped default), it is **13/13 (100%)**, confirmed on every run since, including a fresh check today.
 
+Full story with the before/after screenshots: [BLOG_POST.md](BLOG_POST.md) ([designed version](https://claude.ai/code/artifact/6f1986d4-70ea-4ac3-a2aa-d56b7d9ff242)).
+
 ### Memory
 
 - **What:** stable corrections, preferences, and last-successful-fix notes — never raw tool output.

@@ -1,5 +1,7 @@
 # What my eval suite caught (and what I got wrong before it did)
 
+*Designed version with the actual before/after eval screenshots embedded: [**"The 54% Bug"**](https://claude.ai/code/artifact/6f1986d4-70ea-4ac3-a2aa-d56b7d9ff242). This file is the source of record; that page is the shareable, illustrated read.*
+
 I built an AI on-call assistant — it answers incident questions grounded in a team's real runbooks and postmortems, and it's supposed to cite exactly which document it used. Live demo: [ai-internship-streamlit-ui.onrender.com](https://ai-internship-streamlit-ui.onrender.com). This is the story of the one failure that mattered most, and the two times I fixed it wrong before I fixed it right.
 
 ## The failure

@@ -1,27 +1,27 @@
 # Interview talking points — three decisions, one breath each
 
-Each is structured **decision → why → evidence**, so it stands on its own without slides.
+Three specific decisions, not a feature list. Each is **decision → why → evidence**, sized to say in one breath.
 
-## 1. Moved the citation guard from the prompt to the code
+## 1. Why an agent, not a fixed workflow
 
-**Decision:** Instead of relying on the model to self-police citations, `rag_core.py` now deterministically clears citations whenever the model's own `sources_needed`/`citations` fields are inconsistent.
+**Decision:** Built this as an agent — Google ADK `Agent`/`Runner` deciding at runtime whether to call `search_runbooks` at all, and how many times — instead of a fixed retrieve-then-generate pipeline.
 
-**Why:** Two rounds of prompt-only fixes (a checklist, then a stricter two-gate rewrite) each showed real but incomplete, variance-prone improvement. A grounding guarantee shouldn't depend on the model reliably following instructions on every sample.
+**Why:** the tradeoff is predictability and cost versus correctness. A fixed pipeline is cheaper, faster, and fully deterministic — one retrieval call, every time — but a single fixed query can't cover a genuinely compound or ambiguous incident description. Accepted variable latency/cost, capped by a `max_llm_calls` budget rather than left unbounded, in exchange for handling the harder questions correctly.
 
-**Evidence:** Re-ran the same 13 real questions before and after. Prompt-only (guard off): 54–69% consistency across runs — genuine sampling variance, not a single bad draw. Code-level fix (guard on): 13/13, 100%, on every run since, including a fresh check today.
+**Evidence:** on a real compound question, the agent issued two sequential tool calls with different queries before answering — on its own. Nothing in the code fixes the call count or sequence; it's bounded, not scripted.
 
-## 2. Found and fixed a silent Pinecone bug in the memory store, live, not in a test environment
+## 2. What evals caught that I didn't expect
 
-**Decision:** Sanitize every memory key into a slug before it becomes a Pinecone vector ID, applied consistently across write/read/delete.
+**Decision:** Stopped trusting reparsed trace exports for eval verification and switched to calling the real retrieval function directly (or regenerating a clean dataset) for every before/after measurement.
 
-**Why:** Testing the deployed memory endpoint for real (not just locally) surfaced that Pinecone accepts a vector ID containing a space — `upserted_count=1`, no error — but that vector is then permanently unfetchable by that exact ID. The gate classifier's LLM-proposed keys aren't guaranteed to be space-free, so this was a live, real bug, not a hypothetical.
+**Why:** the tradeoff was eval-build speed versus eval validity — reparsing existing trace logs is faster than rebuilding clean data, but only if the reparse is actually trustworthy.
 
-**Evidence:** Reproduced directly against the Pinecone SDK, independent of any of my endpoint code, isolating it from a plausible alternative explanation (eventual-consistency lag, which I'd already ruled out by comparison against a dash-only key that worked immediately). Shipped the fix, then re-verified the exact failing case live before calling it done.
+**Evidence:** my first before/after test came back a suspiciously clean 26/26. Traced it to a bare `except: pass` silently swallowing a failed reparse of a 300-character-truncated tool observation, defaulting the very field I was testing to a false value instead of raising. It only surfaced because the methodology itself got challenged — "agreement is the trap metric, an always-pass judge gets high agreement and zero true-positive rate" — not because I caught it myself. Every eval after that called the live function directly instead of trusting exported text.
 
-## 3. Root-caused a production-only MCP failure from logs, not guesses
+## 3. A memory tradeoff I chose deliberately
 
-**Decision:** Pass `env=os.environ.copy()` into `StdioServerParameters` when spawning the MCP subprocess.
+**Decision:** Gate memory writes through a small classifier (`gpt-4o-mini`) rather than writing everything, or requiring an explicit "remember this" command.
 
-**Why:** `/agent/mcp` returned 502 in production while working locally. Two earlier hypotheses (subprocess spawn too slow on Render's free CPU; timeout/call-budget too tight) were tested and ruled out — the first was real but insufficient, the second didn't move the failure rate at all. The actual cause, found in real Render logs: `OpenAIError: Missing credentials` inside the subprocess, because `StdioServerParameters` does not auto-inherit the parent process's environment. It never showed up locally because a `.env` file on disk masked it there — Render has no such file; secrets come from real env vars that don't propagate to a child process by default.
+**Why:** the tradeoff is recall versus precision of what gets remembered. Write-everything pollutes memory with ephemeral tool output and one-off questions; require-an-explicit-command misses facts stated in passing and adds friction. The gate accepts occasional misclassification in exchange for mostly-correct behavior with zero extra user effort.
 
-**Evidence:** Confirmed live after the fix — `/agent/mcp` returns 200 with a grounded, cited answer, same as the direct function-tool path.
+**Evidence:** tested against three real cases — a genuine correction persisted with a distilled key/value, a one-off question discarded, raw tool-output-shaped text discarded — confirmed both in local testing and live against the deployed API this session, not just a unit test.

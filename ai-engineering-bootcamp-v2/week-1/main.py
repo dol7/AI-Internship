@@ -158,10 +158,14 @@ class EvalCaseResult(BaseModel):
 
 
 class EvalRequest(BaseModel):
-    """Omit questions to run the built-in default set (the same questions
-    used to validate the citation-consistency fix)."""
+    """Omit both fields to run the built-in default set (the same questions
+    used to validate the citation-consistency fix). `question` (singular) is
+    the course's starter assignment-contract shape -- evaluates that one
+    question specifically, not the default set. `questions` (plural) is this
+    service's own multi-question shape. If both are given, `question` wins."""
 
     questions: list[str] | None = None
+    question: str | None = None
 
 
 class EvalResponse(BaseModel):
@@ -559,9 +563,16 @@ def eval_endpoint(body: EvalRequest) -> EvalResponse:
 
     curl (local):
       curl -s -X POST http://127.0.0.1:8000/eval -H "Content-Type: application/json" -d '{}'
+
+    Also accepts the course's starter assignment-contract shape,
+    {"question": "..."} (singular) -- evaluates just that one question:
+      curl -s -X POST http://127.0.0.1:8000/eval -H "Content-Type: application/json" -d '{"question": "..."}'
     """
 
-    questions = body.questions or DEFAULT_EVAL_QUESTIONS
+    if body.question:
+        questions = [body.question]
+    else:
+        questions = body.questions or DEFAULT_EVAL_QUESTIONS
     known_ids = set(ONCALL_DOCUMENT_IDS)
     cases: list[EvalCaseResult] = []
     summary: dict[str, dict[str, int]] = {}

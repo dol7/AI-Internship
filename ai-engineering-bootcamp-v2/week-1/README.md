@@ -1,6 +1,42 @@
 # Week 1 — `/ask` Demo (5 stages)
 
-Build a typed LLM endpoint step by step. Each stage is a standalone FastAPI app you can run and compare.
+Build a typed LLM endpoint step by step. Each stage is a standalone FastAPI app you can run and compare. `main.py` is stage 5 grown into the actual capstone described below.
+
+## Capstone: on-call incident triage agent
+
+**Live:** UI [ai-internship-streamlit-ui.onrender.com](https://ai-internship-streamlit-ui.onrender.com) · API [ai-internship-5euv.onrender.com](https://ai-internship-5euv.onrender.com) · [source](https://github.com/dol7/AI-Internship)
+
+**Problem.** When something breaks in production, the on-call engineer's first move is usually "has this happened before, and what fixed it?" — but that answer is scattered across old runbooks, postmortems, and whoever remembers the last incident. This agent answers on-call questions grounded in the team's actual runbooks and postmortems, cites what it used, refuses to fabricate a source when it doesn't have one, and remembers standing rules (like escalation preferences) across sessions instead of re-asking every time.
+
+**Architecture.**
+
+```mermaid
+flowchart LR
+    UI["Streamlit UI\nrag_ui.py"] --> AGENT
+    UI --> MCPEP
+    UI --> EVAL
+    UI --> MEMEP
+
+    subgraph API["FastAPI service — main.py"]
+        AGENT["/agent\nGoogle ADK Agent + Runner"]
+        MCPEP["/agent/mcp\nsame agent, MCP transport"]
+        EVAL["/eval, /eval/dataset"]
+        MEMEP["/memory*\ngate + CRUD"]
+    end
+
+    AGENT --> RAG["rag_core.py\nsearch_runbooks()"]
+    MCPEP --> MCPSRV["mcp_server.py\nFastMCP, stdio subprocess"] --> RAG
+    RAG --> PINE[("Pinecone\ndefault ns: RAG docs\nmemory ns: facts")]
+    RAG --> OPENAI[["OpenAI\ngpt-4o answers"]]
+    MEMEP --> PINE
+    MEMEP --> OPENAI2[["OpenAI\ngpt-4o-mini memory gate"]]
+    AGENT -. trace .-> LF[["Langfuse"]]
+    MCPEP -. trace .-> LF
+```
+
+**Stack.** FastAPI + Google ADK (`Agent`, `Runner`, `InMemorySessionService`) for the agent loop; OpenAI structured outputs (`chat.completions.parse` + a Pydantic `Answer` schema) for grounded generation; Pinecone for both the RAG knowledge base and the durable memory store (separate namespaces); MCP (`FastMCP`, stdio + streamable-HTTP transports) as an alternate tool-calling path into the same retrieval core; Langfuse (`GoogleADKInstrumentor` + `langfuse.openai`) for tracing both transports; Streamlit as a thin client — no business logic lives in the UI; deployed on Render (API and UI as two separate free-tier services).
+
+**What TRACE proved, and the fix.** Open-coded 20 sample traces plus 15+ of my own capstone runs into a failure taxonomy (4+ categories), ranked by frequency × impact. Top failure: the agent would sometimes assert `sources_needed=true` but attach citations inconsistently — a real grounding gap, not a cosmetic one. Two rounds of prompt-only fixes (a checklist, then a stricter two-gate rewrite) each measurably improved but did not eliminate it. Shipped a deterministic code-level fix instead — `rag_core.py`'s `call_rag_structured` now force-clears citations whenever `sources_needed=True` fails its own consistency check, rather than trusting the model to self-police. Re-running the same 13 real questions: with the guard disabled (`DEMO_DISABLE_CITATION_GUARD=true`, i.e. the old prompt-only behavior), `sources_needed_citation_consistency` landed at 54–69% (7–9 / 13) across runs — genuine LLM sampling variance, not cherry-picked. With the guard on (shipped default), it is **13/13 (100%)**, confirmed on every run since, including a fresh check today.
 
 ## Setup
 

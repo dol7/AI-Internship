@@ -1,6 +1,6 @@
 # One-page brief — on-call incident triage agent
 
-**Live:** UI [ai-internship-streamlit-ui.onrender.com](https://ai-internship-streamlit-ui.onrender.com) · API [ai-internship-5euv.onrender.com](https://ai-internship-5euv.onrender.com) · [source](https://github.com/dol7/AI-Internship)
+Story, in order: **problem → architecture → stack → live demo.** Everything after that is supporting proof, not part of the pitch.
 
 ## Problem
 
@@ -13,6 +13,12 @@ Streamlit UI (thin client) → FastAPI (`main.py`) → Google ADK `Agent`/`Runne
 ## Stack
 
 FastAPI · Google ADK · OpenAI (`gpt-4o` answers, `gpt-4o-mini` memory gate, structured outputs via `chat.completions.parse`) · Pinecone · MCP (`FastMCP`) · Langfuse · Streamlit · Render.
+
+## Live demo
+
+**UI:** [ai-internship-streamlit-ui.onrender.com](https://ai-internship-streamlit-ui.onrender.com) · **API:** [ai-internship-5euv.onrender.com](https://ai-internship-5euv.onrender.com) · **source:** [github.com/dol7/AI-Internship](https://github.com/dol7/AI-Internship)
+
+Open the UI — it lands on the **Agent** tab. Ask a real on-call question (e.g. *"Redis cache is showing a spike in errors, what should I check first?"*) and the answer comes back citing the actual runbook/postmortem it used, not a canned response. That's the core task, end to end, for a stranger with no setup. Minute-by-minute walkthrough: [DEMO_SCRIPT.md](DEMO_SCRIPT.md).
 
 ## What TRACE proved, and the fix shipped
 

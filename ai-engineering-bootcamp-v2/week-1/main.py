@@ -517,11 +517,26 @@ async def run_agent(
     return AgentResponse(answer=final_text, steps=steps)
 
 
+AGENT_CACHE_TTL_SECONDS = 600  # 10 min -- long enough to cover rehearsing a demo script
+_agent_cache: dict[str, tuple[float, AgentResponse]] = {}  # normalized goal -> (cached_at, response)
+
+
 @app.post("/agent")
 async def agent_endpoint(body: AgentRequest) -> AgentResponse:
     """
     Same on-call agent as /agent/mcp, but search_runbooks is wired in as a
     plain in-process Python function (a FunctionTool) -- no MCP involved.
+
+    Short-TTL cache on the exact goal text: re-asking the same question
+    within AGENT_CACHE_TTL_SECONDS returns the earlier real response instead
+    of triggering a fresh LLM call. This is for the common case of
+    rehearsing a demo/showcase against a handful of fixed questions, which
+    was genuinely stacking up rate-limit pressure on the underlying
+    OpenAI/Gemini API key during repeated testing. The cached response is a
+    real answer from an earlier live call, not fabricated -- this only
+    skips redundant identical calls, never changes what's returned. /agent/
+    mcp is deliberately NOT cached, since its whole purpose is demonstrating
+    a genuine live MCP round-trip every time.
 
     curl (local):
       curl -s -X POST http://127.0.0.1:8000/agent \
@@ -533,7 +548,17 @@ async def agent_endpoint(body: AgentRequest) -> AgentResponse:
         -H "Content-Type: application/json" \
         -d '{"goal": "Storefront search p99 latency spiked to 3s, no deploy correlates. What should I check?"}'
     """
-    return await run_agent(oncall_agent, body.goal, transport="function-tool")
+    cache_key = body.goal.strip().lower()
+    cached = _agent_cache.get(cache_key)
+    if cached is not None:
+        cached_at, cached_response = cached
+        if time.time() - cached_at < AGENT_CACHE_TTL_SECONDS:
+            return cached_response
+        del _agent_cache[cache_key]  # expired, fall through to a fresh call
+
+    response = await run_agent(oncall_agent, body.goal, transport="function-tool")
+    _agent_cache[cache_key] = (time.time(), response)
+    return response
 
 
 @app.post("/agent/mcp")

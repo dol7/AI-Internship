@@ -15,18 +15,20 @@ No secrets live in this UI -- the API holds its own OpenAI/Pinecone/Google
 keys server-side; this page only ever needs a URL.
 """
 
+import html
 import os
+import re
 
 import httpx
+import markdown as md
 import streamlit as st
 
 st.set_page_config(page_title="RAG + Agent Service UI", layout="wide")
 st.title("On-Call Incident Triage Agent")
 st.caption(
-    "Ask an on-call question below and get an answer grounded in real "
-    "runbooks and postmortems, with citations -- start in the **Agent** "
-    "tab. (Eval and Memory show the proof-of-work behind it; Debug "
-    "Retrieve and Ingest are internal dev tooling used to build this.)"
+    "See it handle a real page in **Showcase**, or ask your own question "
+    "in **Agent**. (Eval and Memory show the proof-of-work behind it; "
+    "Debug Retrieve and Ingest are internal dev tooling used to build this.)"
 )
 
 default_base_url = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
@@ -36,9 +38,113 @@ st.sidebar.caption(
     "No secrets are stored here -- the API holds its own keys server-side."
 )
 
-tab_agent, tab_ask, tab_eval, tab_memory, tab_debug, tab_ingest = st.tabs(
-    ["Agent", "Ask", "Eval", "Memory", "Debug Retrieve", "Ingest"]
+tab_showcase, tab_agent, tab_ask, tab_eval, tab_memory, tab_debug, tab_ingest = st.tabs(
+    ["Showcase", "Agent", "Ask", "Eval", "Memory", "Debug Retrieve", "Ingest"]
 )
+
+SHOWCASE_SCENARIOS = {
+    "Checkout latency spiked, what should I check first?": "Simple, one clear symptom.",
+    "we're seeing both webhook delivery delays AND payment gateway failures at the same time, are these related?": "Compound question -- watch whether it searches more than once.",
+    "TLS certificate is about to expire on the storefront domain, what do I do?": "Real Shopify Plus custom-domain SSL mechanics, not generic advice.",
+}
+CITATION_PATTERN = re.compile(r"`((?:runbook|postmortem)_[a-zA-Z0-9_-]+)`")
+REFUSAL_MARKERS = ("don't have", "do not have", "no runbook", "no matching", "couldn't find", "not able to find", "don't know")
+
+with tab_showcase:
+    st.markdown(
+        """
+        <style>
+        .sc-wrap { background:#12161d; border:1px solid #2b323d; border-radius:14px;
+            padding:28px 30px; margin-bottom:14px; }
+        .sc-banner { display:flex; align-items:center; gap:10px; margin-bottom:18px;
+            padding-bottom:16px; border-bottom:1px solid #2b323d; }
+        .sc-dot { width:9px; height:9px; border-radius:50%; background:#e08a52;
+            box-shadow:0 0 0 4px rgba(224,138,82,0.18); flex:none; }
+        .sc-label { font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace; font-size:12px;
+            letter-spacing:0.08em; text-transform:uppercase; color:#e08a52; font-weight:600; }
+        .sc-question { color:#e8eaed; font-size:1.05rem; line-height:1.5; margin:0; }
+        .sc-answer { color:#dfe3e8; font-size:0.98rem; line-height:1.65; }
+        .sc-answer h1, .sc-answer h2, .sc-answer h3 { color:#e8eaed; margin:16px 0 8px; }
+        .sc-answer h3:first-child { margin-top:0; }
+        .sc-answer p { margin:0 0 12px; }
+        .sc-answer ul, .sc-answer ol { margin:0 0 12px; padding-left:22px; }
+        .sc-answer li { margin-bottom:4px; }
+        .sc-answer code { background:#1e2530; border:1px solid #2b323d; border-radius:4px; padding:0.1em 0.4em; font-size:0.9em; }
+        .sc-answer strong { color:#e8eaed; }
+        .sc-callout { display:flex; gap:10px; align-items:flex-start; margin-top:14px;
+            padding:10px 14px; border-radius:8px; font-size:0.92rem; line-height:1.5; }
+        .sc-callout.ok { background:#16261f; border-left:3px solid #5cbf95; color:#bfe9d4; }
+        .sc-callout.warn { background:#2e2119; border-left:3px solid #e08a52; color:#f3d3b8; }
+        .sc-close { text-align:center; color:#96a0ac; font-style:italic; margin-top:22px;
+            padding-top:16px; border-top:1px solid #2b323d; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "A real page, handled live -- calls the actual deployed agent, not a canned "
+        "transcript. First call can take up to ~30s if the free-tier host is cold-starting."
+    )
+
+    scenario = st.selectbox("Incident", list(SHOWCASE_SCENARIOS.keys()), format_func=lambda q: q)
+    st.caption(SHOWCASE_SCENARIOS[scenario])
+    run = st.button("Page the agent", type="primary", key="showcase_run")
+
+    if run:
+        banner_html = f"""
+        <div class="sc-wrap">
+          <div class="sc-banner"><span class="sc-dot"></span>
+            <span class="sc-label">Incident &middot; just paged</span></div>
+          <p class="sc-question">{html.escape(scenario)}</p>
+        </div>
+        """
+        st.markdown(banner_html, unsafe_allow_html=True)
+
+        with st.spinner("Waking the on-call agent -- free-tier host may be cold-starting..."):
+            try:
+                r = httpx.post(f"{base_url}/agent", json={"goal": scenario}, timeout=90.0)
+            except httpx.HTTPError as exc:
+                st.error(f"Couldn't reach the agent: {exc}")
+                r = None
+
+        if r is not None:
+            if r.status_code != 200:
+                st.error(f"HTTP {r.status_code} -- {r.text[:300]}")
+            else:
+                data = r.json()
+                answer = data.get("answer", "")
+                steps = data.get("steps", [])
+                search_calls = sum(1 for s in steps if s.get("kind") == "act" and s.get("tool") == "search_runbooks")
+                citations = CITATION_PATTERN.findall(answer)
+                is_refusal = any(marker in answer.lower() for marker in REFUSAL_MARKERS)
+
+                callouts = []
+                if citations:
+                    cited = ", ".join(f"<code>{html.escape(c)}</code>" for c in dict.fromkeys(citations))
+                    callouts.append(("ok", f"Real citation, not invented &mdash; pulled from {cited} in the actual knowledge base."))
+                elif is_refusal:
+                    callouts.append(("warn", "No matching source &mdash; it says so instead of guessing."))
+                if search_calls >= 2:
+                    callouts.append(("ok", f"Called <code>search_runbooks</code> {search_calls} times, on its own &mdash; not a scripted pipeline."))
+                elif search_calls == 1:
+                    callouts.append(("ok", "Searched the knowledge base before answering."))
+
+                callout_html = "".join(
+                    f'<div class="sc-callout {kind}">→ {text}</div>' for kind, text in callouts
+                )
+
+                response_html = f"""
+                <div class="sc-wrap">
+                  <div class="sc-answer">{md.markdown(answer)}</div>
+                  {callout_html}
+                  <div class="sc-close">Same tool, cited every time it can be, honest when it can't.</div>
+                </div>
+                """
+                st.markdown(response_html, unsafe_allow_html=True)
+
+                with st.expander("Show what's happening under the hood"):
+                    st.json(data)
 
 with tab_ingest:
     st.subheader("POST /ingest")

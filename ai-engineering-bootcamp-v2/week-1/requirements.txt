@@ -4,6 +4,7 @@ google-genai
 httpx
 langchain-text-splitters
 langfuse
+markdown
 mcp>=1.24,<2
 openinference-instrumentation-google-adk
 # langfuse's OTLP exporter forces opentelemetry-api/sdk 1.44.x, newer than

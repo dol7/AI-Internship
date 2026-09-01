@@ -6,7 +6,7 @@ Hands-on course materials for building production-style LLM APIs with **FastAPI*
 
 | Week | Topic | Location |
 |------|-------|----------|
-| 1 | `/ask` endpoint — typed I/O, structured output, guardrails, model selection, cost | [`week-1/`](week-1/) |
+| 1 | `/ask` endpoint, grown into the capstone — a deployed on-call agent with RAG, MCP, durable memory, and a TRACE eval suite ([case study](week-1/README.md#capstone-on-call-incident-triage-agent)) | [`week-1/`](week-1/) |
 | 1 v2 | Simplified class-ready `/ask` demo with one final API and optional stage references | [`week-1v2/`](week-1v2/) |
 | 2 | RAG and vector databases | [`week-2/`](week-2/) |
 

@@ -2,6 +2,12 @@
 
 This repository contains code snippets, notebooks, and exercises for various AI courses and programs offered through the AI Internship.
 
+## 🎯 Capstone: on-call incident triage agent
+
+An AI agent that answers on-call incident questions grounded in real runbooks/postmortems, with citations, durable memory, and a full TRACE eval suite. Live and deployed, not just a notebook.
+
+**Live:** [Streamlit UI](https://ai-internship-streamlit-ui.onrender.com) · [API](https://ai-internship-5euv.onrender.com) · **Case study:** [`ai-engineering-bootcamp-v2/week-1/README.md`](ai-engineering-bootcamp-v2/week-1/README.md) · **One-pager:** [`BRIEF.md`](ai-engineering-bootcamp-v2/week-1/BRIEF.md)
+
 ## 📚 Available Courses
 
 ### AI Engineering Bootcamp v2

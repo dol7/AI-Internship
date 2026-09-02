@@ -23,6 +23,25 @@ import httpx
 import markdown as md
 import streamlit as st
 
+
+def render_error_body(response: httpx.Response) -> None:
+    """Render an error response body whether or not it's actually JSON.
+
+    A non-200 response isn't guaranteed to be JSON -- e.g. Render's own bare
+    502 gateway page when the backend crashed or didn't respond, rather than
+    a graceful error this app returned deliberately. Calling response.json()
+    unconditionally on that used to crash this whole page with an unhandled
+    JSONDecodeError instead of showing anything useful.
+    """
+    try:
+        st.json(response.json())
+    except ValueError:
+        st.code(response.text[:500] or "(empty response body)")
+        st.caption(
+            "Non-JSON error response -- likely the hosting platform's own "
+            "gateway error, not something this app returned deliberately."
+        )
+
 st.set_page_config(page_title="RAG + Agent Service UI", layout="wide")
 st.title("On-Call Incident Triage Agent")
 st.caption(
@@ -169,7 +188,7 @@ with tab_ingest:
                     st.json(response.json())
                 else:
                     st.error(f"HTTP {response.status_code}")
-                    st.json(response.json())
+                    render_error_body(response)
 
 with tab_ask:
     st.subheader("POST /ask")
@@ -186,7 +205,7 @@ with tab_ask:
             else:
                 if response.status_code != 200:
                     st.error(f"HTTP {response.status_code}")
-                    st.json(response.json())
+                    render_error_body(response)
                 else:
                     data = response.json()
                     answer = data["answer"]
@@ -270,7 +289,7 @@ def run_agent_and_render(endpoint_path: str, goal: str) -> None:
     if response is not None:
         if response.status_code != 200:
             st.error(f"HTTP {response.status_code}")
-            st.json(response.json())
+            render_error_body(response)
         else:
             data = response.json()
 
@@ -366,7 +385,7 @@ with tab_debug:
             else:
                 if response.status_code != 200:
                     st.error(f"HTTP {response.status_code}")
-                    st.json(response.json())
+                    render_error_body(response)
                 else:
                     data = response.json()
                     st.caption(f"Relevance threshold: {data['threshold']}")
@@ -446,7 +465,7 @@ with tab_eval:
         if response is not None:
             if response.status_code != 200:
                 st.error(f"HTTP {response.status_code}")
-                st.json(response.json())
+                render_error_body(response)
             else:
                 data = response.json()
 
@@ -503,7 +522,7 @@ with tab_memory:
             else:
                 if r.status_code != 200:
                     st.error(f"HTTP {r.status_code}")
-                    st.json(r.json())
+                    render_error_body(r)
                 else:
                     d = r.json()
                     if d["should_persist"]:
@@ -536,7 +555,7 @@ with tab_memory:
                     st.info(f"No fact stored under key `{lookup_key}`.")
                 elif r.status_code != 200:
                     st.error(f"HTTP {r.status_code}")
-                    st.json(r.json())
+                    render_error_body(r)
                 else:
                     st.json(r.json())
 
@@ -550,7 +569,7 @@ with tab_memory:
         else:
             if r.status_code != 200:
                 st.error(f"HTTP {r.status_code}")
-                st.json(r.json())
+                render_error_body(r)
             else:
                 facts = r.json()
                 if not facts:

@@ -27,7 +27,13 @@ from langfuse.openai import OpenAI
 
 client = OpenAI()  # Reads OPENAI_API_KEY from the environment; never hardcode keys.
 
-DEFAULT_MODEL = "gpt-4o"
+# TEMPORARY, 2026-09-01: gpt-4o's 90,000 TPD cap was confirmed exhausted
+# today (OpenAI usage dashboard showed 89,971 input tokens alone against
+# that ceiling) after a long day of real testing/rehearsal. Switched to
+# gpt-4o-mini, which has 22x the daily headroom (2,000,000 TPD) and was
+# barely used today, to unblock recording. Revert to "gpt-4o" once the
+# daily cap resets at 00:00 UTC -- this is not meant to be permanent.
+DEFAULT_MODEL = "gpt-4o-mini"
 
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIMENSION = 1536  # must match EMBEDDING_MODEL's output size if that's overridden

@@ -279,7 +279,12 @@ oncall_agent_mcp = Agent(
                     # exist in the parent process's real environment, so the
                     # subprocess needs it passed explicitly or OpenAI() raises
                     # immediately on import. Confirmed via Render logs.
-                    env=os.environ.copy(),
+                    #
+                    # MCP_SUBPROCESS=1 tells rag_core.py to skip langfuse.openai
+                    # in favor of plain openai here -- confirmed via a real
+                    # Render OOM kill that this subprocess's memory footprint
+                    # matters on the free tier's 512MB ceiling.
+                    env={**os.environ, "MCP_SUBPROCESS": "1"},
                 ),
                 timeout=60.0,
             )

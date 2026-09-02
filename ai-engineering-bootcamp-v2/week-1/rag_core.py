@@ -23,7 +23,21 @@ load_dotenv(_ENV_PATH)
 # instrumentation needed. Self-disables the same way get_client() does when
 # LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY aren't set -- the OpenAI calls
 # themselves are completely unaffected either way.
-from langfuse.openai import OpenAI
+#
+# Skipped for the MCP subprocess specifically (MCP_SUBPROCESS=1, set by
+# main.py when spawning mcp_server.py): measured locally, langfuse.openai
+# costs ~48MB more RSS than plain openai (118.6MB vs 70MB) from pulling in
+# the full OpenTelemetry/gRPC/protobuf stack. On Render's free-tier 512MB
+# instance, that's real -- confirmed via an actual OOM kill ("used over
+# 512MB") on /agent/mcp, which runs this subprocess alongside the already-
+# heavy parent FastAPI+ADK process. The outer /agent/mcp request is already
+# traced at the main.py level regardless, so this subprocess's own internal
+# OpenAI call not being separately traced is an acceptable tradeoff for
+# actually fitting in memory.
+if os.environ.get("MCP_SUBPROCESS") == "1":
+    from openai import OpenAI
+else:
+    from langfuse.openai import OpenAI
 
 client = OpenAI()  # Reads OPENAI_API_KEY from the environment; never hardcode keys.
 
